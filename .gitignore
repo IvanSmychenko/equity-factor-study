@@ -1,0 +1,52 @@
+# Виртуальные окружения
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Тесты и проверки кода
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# PyCharm: локальные настройки IDE
+.idea/
+
+# macOS
+.DS_Store
+._*
+
+# Секреты и локальная конфигурация
+.env
+.env.*
+!.env.example
+/configs/local.toml
+
+# Логи
+/logs/
+*.log
+
+# Полученные и промежуточные данные
+/data/raw/*
+!/data/raw/.gitkeep
+
+/data/interim/*
+!/data/interim/.gitkeep
+
+/data/processed/*
+!/data/processed/.gitkeep
+
+# Автоматически сформированные диагностические отчёты
+/data/reports/*
+!/data/reports/.gitkeep
+
+# Jupyter
+.ipynb_checkpoints/

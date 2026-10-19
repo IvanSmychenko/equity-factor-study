@@ -1,0 +1,32 @@
+[project]
+name = "equity-factor-study"
+version = "0.1.0"
+description = "Data collection and preparation for equity return forecasting research"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "requests>=2.32,<3",
+    "pandas>=2.2.3,<3",
+    "defusedxml>=0.7.1,<1",
+]
+
+[tool.poetry]
+packages = [
+    { include = "equity_factor_study", from = "src" }
+]
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.3,<9"
+responses = ">=0.25,<1"
+ruff = ">=0.9,<1"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[build-system]
+requires = ["poetry-core>=2.0,<3"]
+build-backend = "poetry.core.masonry.api"
