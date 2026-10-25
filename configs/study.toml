@@ -1,0 +1,58 @@
+[protocol]
+version = "0.1"
+
+[period]
+download_start = 2013-07-01
+observation_start = 2014-01-01
+observation_end = 2026-09-30
+development_target_end = 2020-12-31
+evaluation_target_start = 2021-01-01
+
+[universe]
+target_size = 10
+selection_board = "TQBR"
+security_type = "common_share"
+turnover_year = 2014
+selection_rule = "turnover_2014_desc"
+require_survive_to_end = false
+allow_fewer = true
+
+[features]
+return_1m = true
+momentum_prev_3m = 3
+volatility_3m = 3
+annualize_volatility = false
+key_rate_pct = true
+key_rate_change_pp = true
+
+[month_end]
+max_trading_days_from_month_end = 5
+
+[model]
+type = "ols"
+per_security = true
+training_window_months = 48
+refit_frequency = "monthly"
+window_sensitivity = [36, 60]
+
+[selection]
+rebalance_frequency = "quarterly"
+selection_window_months = 12
+selection_window_sensitivity = [18]
+tie_break = "fewest_features"
+level = "pooled_across_securities"
+aggregation = "securities_then_months"
+warmup_from = "development"
+
+[evaluation]
+primary_metric = "mse"
+secondary_metric = "mae"
+aggregation = "securities_then_months"
+
+[bootstrap]
+method = "paired_block"
+block_months = 6
+block_sensitivity = [3, 12]
+replicates = 5000
+confidence = 0.95
+seed = 20140101
