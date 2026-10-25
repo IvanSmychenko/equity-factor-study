@@ -15,6 +15,50 @@ class HistoryPage:
     raw_path: Path
 
 
+@dataclass
+class HistoryDownload:
+    table: pd.DataFrame
+    raw_paths: list[Path]
+    page_sizes: list[int]
+    cursor_total: int | None
+
+    def __bool__(self) -> bool:
+        return not self.table.empty
+
+    @property
+    def pages(self) -> int:
+        return len(self.raw_paths)
+
+    @property
+    def rows(self) -> int:
+        return len(self.table)
+
+    @property
+    def date_interval(self) -> tuple[date | None, date | None]:
+        """Реальный интервал торговых дат, наблюдаемый в данных."""
+        if self.table.empty or "TRADEDATE" not in self.table.columns:
+            return None, None
+        trade_dates = pd.to_datetime(self.table["TRADEDATE"], errors="coerce").dropna()
+        if trade_dates.empty:
+            return None, None
+        return trade_dates.min().date(), trade_dates.max().date()
+
+
+class MOEXHistoryError(Exception):
+    """Ошибка сбора истории MOEX (непродвижение курсора, дубли, неполнота)."""
+
+
+def _cursor_values(cursor: pd.DataFrame) -> tuple[int | None, int | None, int | None]:
+    """Извлечь (index, total, page_size) из строки курсора."""
+    if cursor.empty:
+        return None, None, None
+    row = cursor.iloc[0]
+    index = int(row["INDEX"]) if "INDEX" in cursor.columns else None
+    total = int(row["TOTAL"]) if "TOTAL" in cursor.columns else None
+    page_size = int(row["PAGESIZE"]) if "PAGESIZE" in cursor.columns else None
+    return index, total, page_size
+
+
 def parse_block(payload: dict, name: str) -> pd.DataFrame:
     """Преобразовать стандартный табличный блок ISS."""
     if name not in payload:
@@ -126,3 +170,120 @@ class MOEXClient:
             cursor=cursor,
             raw_path=raw_path,
         )
+
+    def get_full_history(
+        self,
+        *,
+        security: str,
+        from_date: date,
+        till_date: date,
+        board: str = "TQBR",
+        start: int = 0,
+    ) -> HistoryDownload:
+        """Собрать полную историю по инструменту за интервал.
+
+        Итерация продолжается до пустой страницы либо достижения общего числа
+        записей из курсора; размер страницы берётся из курсора. По завершении
+        проверяются отсутствие дублей по паре «инструмент — дата» и полнота
+        относительно курсора. При непродвижении позиции сбор прерывается.
+        """
+        pages: list[pd.DataFrame] = []
+        raw_paths: list[Path] = []
+        page_sizes: list[int] = []
+        cursor_total: int | None = None
+
+        current = start
+        last_index: int | None = None
+        while True:
+            page = self.get_history_page(
+                security=security,
+                from_date=from_date,
+                till_date=till_date,
+                board=board,
+                start=current,
+            )
+
+            if page.table.empty:
+                break
+
+            index, total, page_size = _cursor_values(page.cursor)
+            if total is not None:
+                cursor_total = total
+
+            # Размер страницы берётся из курсора; если курсора нет — по факту.
+            effective_page_size = page_size if page_size else len(page.table)
+            if effective_page_size <= 0:
+                raise MOEXHistoryError(
+                    f"Курсор {security}@{board} вернул неположительный размер страницы: "
+                    f"{effective_page_size}"
+                )
+
+            page_sizes.append(len(page.table))
+            pages.append(page.table)
+            raw_paths.append(page.raw_path)
+
+            # Позиция следующей страницы определяется курсором (INDEX), а если
+            # курсора нет — по размеру текущей страницы.
+            next_position = (index if index is not None else current) + effective_page_size
+
+            # Защита от зацикливания: позиция должна продвинуться.
+            if next_position <= current:
+                raise MOEXHistoryError(
+                    f"Курсор {security}@{board} не продвигает позицию (start={current}, "
+                    f"index={index}, page_size={effective_page_size})"
+                )
+            if index is not None and last_index is not None and index <= last_index:
+                raise MOEXHistoryError(
+                    f"Курсор {security}@{board} не продвигает позицию (index вернулся "
+                    f"к {index} с {last_index})"
+                )
+
+            if total is not None and next_position >= total:
+                break
+
+            last_index = index if index is not None else current
+            current = next_position
+
+        if not pages:
+            return HistoryDownload(
+                table=pd.DataFrame(),
+                raw_paths=raw_paths,
+                page_sizes=page_sizes,
+                cursor_total=cursor_total,
+            )
+
+        table = pd.concat(pages, ignore_index=True)
+        self._validate_full_history(table, cursor_total, security=security, board=board)
+
+        return HistoryDownload(
+            table=table,
+            raw_paths=raw_paths,
+            page_sizes=page_sizes,
+            cursor_total=cursor_total,
+        )
+
+    @staticmethod
+    def _validate_full_history(
+        table: pd.DataFrame,
+        cursor_total: int | None,
+        *,
+        security: str,
+        board: str,
+    ) -> None:
+        """Проверить собранную историю на дубли и полноту относительно курсора."""
+        if "SECID" in table.columns and "TRADEDATE" in table.columns:
+            duplicates = table.duplicated(subset=["SECID", "TRADEDATE"])
+            if duplicates.any():
+                duplicated = table.loc[duplicates, ["SECID", "TRADEDATE"]].drop_duplicates()
+                examples = ", ".join(
+                    f"{row.SECID}@{row.TRADEDATE}" for row in duplicated.head(5).itertuples()
+                )
+                raise MOEXHistoryError(
+                    f"Найдены дубли по паре «инструмент — дата» для {security}@{board}: {examples}"
+                )
+
+        if cursor_total is not None and len(table) != cursor_total:
+            raise MOEXHistoryError(
+                f"Неполная история {security}@{board}: собрано {len(table)} строк, "
+                f"курсор сообщает {cursor_total}"
+            )
