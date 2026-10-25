@@ -16,6 +16,19 @@ class HistoryPage:
 
 
 @dataclass
+class SecurityCatalog:
+    table: pd.DataFrame
+    raw_path: Path
+
+    def __bool__(self) -> bool:
+        return not self.table.empty
+
+    @property
+    def rows(self) -> int:
+        return len(self.table)
+
+
+@dataclass
 class HistoryDownload:
     table: pd.DataFrame
     raw_paths: list[Path]
@@ -170,6 +183,51 @@ class MOEXClient:
             cursor=cursor,
             raw_path=raw_path,
         )
+
+    def get_securities(
+        self,
+        *,
+        board: str = "TQBR",
+        start: int = 0,
+    ) -> SecurityCatalog:
+        """Получить перечень инструментов, торгуемых на режиме торгов.
+
+        Возвращает справочную таблицу (SECID, SECTYPE, SECNAME, LISTLEVEL и др.)
+        по текущему состоянию режима. Отдельное сохранение ответа выполняется
+        как для истории: исходный JSON и метаданные.
+        """
+        url = (
+            f"{self.BASE_URL}/iss/engines/stock/markets/shares/"
+            f"boards/{board}/securities.json"
+        )
+        params = {
+            "start": start,
+            "iss.only": "securities",
+        }
+        response = self.http.get(url, params=params)
+        retrieved_at = datetime.now(UTC).isoformat()
+
+        file_name = f"{board}_securities_{start:06d}.json"
+        raw_path = save_response(
+            output_dir=self.raw_dir,
+            name=file_name,
+            content=response.content,
+            metadata={
+                "source": "MOEX ISS",
+                "request_method": response.request.method,
+                "url": response.url,
+                "request_parameters": params,
+                "retrieved_at_utc": retrieved_at,
+                "status_code": response.status_code,
+                "content_type": response.headers.get("Content-Type"),
+            },
+        )
+
+        payload = response.json()
+        if not isinstance(payload, dict) or "securities" not in payload:
+            raise ValueError("В ответе ISS отсутствует блок 'securities'")
+        table = parse_block(payload, "securities")
+        return SecurityCatalog(table=table, raw_path=raw_path)
 
     def get_full_history(
         self,

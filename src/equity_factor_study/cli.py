@@ -8,13 +8,18 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
 from collections.abc import Callable
 from pathlib import Path
 
+from equity_factor_study.clients.moex import MOEXClient
 from equity_factor_study.config import ConfigError, StudyConfig, load_config
+from equity_factor_study.http import HttpClient
+from equity_factor_study.storage import run_dir
 
 DEFAULT_CONFIG_PATH = Path("configs/study.toml")
+DEFAULT_RAW_DIR = Path("data") / "raw"
 
 # Код возврата для команд-заглушек, ещё не реализованных в текущем этапе.
 _EXIT_NOT_IMPLEMENTED = 2
@@ -22,6 +27,13 @@ _EXIT_NOT_IMPLEMENTED = 2
 
 def _load_config(arguments: argparse.Namespace) -> StudyConfig:
     return load_config(arguments.config)
+
+
+def _config_hash(config_path: Path) -> str:
+    """Вычислить SHA-256 содержимого файла конфигурации."""
+    digest = hashlib.sha256()
+    digest.update(config_path.read_bytes())
+    return digest.hexdigest()
 
 
 def _cmd_check_config(arguments: argparse.Namespace) -> int:
@@ -54,6 +66,60 @@ def _unsupported(stage_name: str) -> Callable[[argparse.Namespace], int]:
     return _run
 
 
+def _cmd_catalog(arguments: argparse.Namespace) -> int:
+    """Собрать справочник обыкновенных акций на основном режиме."""
+    config = _load_config(arguments)
+    from equity_factor_study.pipelines.catalog import load_catalog
+
+    with HttpClient() as http:
+        client = MOEXClient(http=http, raw_dir=run_dir(base_dir=arguments.raw_dir, source="moex"))
+        result = load_catalog(
+            client=client,
+            board=config.universe.selection_board,
+            security_type=config.universe.security_type,
+        )
+
+    print(f"Справочник режима {config.universe.selection_board}: {len(result.table)} строк")
+    print(f"Обыкновенных акций: {len(result.common_shares)}")
+    return 0
+
+
+def _cmd_universe(arguments: argparse.Namespace) -> int:
+    """Построить историческую совокупность и записать файл-замок."""
+    config = _load_config(arguments)
+    from equity_factor_study.pipelines.catalog import load_catalog
+    from equity_factor_study.pipelines.universe import build_and_write_universe
+
+    # Артефакты этапа 4 (замок состава и перечень исключений) размещаются
+    # рядом с файлом конфигурации (по ТЗ — configs/universe.lock.toml),
+    # а не внутри пер-прогонной выгрузки raw-данных.
+    config_dir = arguments.config.resolve().parent
+
+    with HttpClient() as http:
+        client = MOEXClient(http=http, raw_dir=run_dir(base_dir=arguments.raw_dir, source="moex"))
+        catalog = load_catalog(
+            client=client,
+            board=config.universe.selection_board,
+            security_type=config.universe.security_type,
+        )
+        result = build_and_write_universe(
+            client=client,
+            lock_path=config_dir / "universe.lock.toml",
+            exclusions_path=config_dir / "universe_exclusions.csv",
+            catalog_table=catalog.common_shares,
+            config_hash=_config_hash(arguments.config),
+            version=config.protocol.version,
+            board=config.universe.selection_board,
+            year=config.universe.turnover_year,
+            target_size=config.universe.target_size,
+        )
+
+    print(f"Отобрано инструментов: {len(result.selected)}: {', '.join(result.selected)}")
+    print(f"Исключено кандидатов: {len(result.reasons)}")
+    print(f"Замок состава: {config_dir / 'universe.lock.toml'}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Построить парсер аргументов командной строки."""
     parser = argparse.ArgumentParser(
@@ -65,6 +131,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_CONFIG_PATH,
         help=f"Путь к файлу конфигурации (по умолчанию {DEFAULT_CONFIG_PATH}).",
+    )
+    parser.add_argument(
+        "--raw-dir",
+        type=Path,
+        default=DEFAULT_RAW_DIR,
+        help=f"Каталог выгрузки исходных данных (по умолчанию {DEFAULT_RAW_DIR}).",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True, metavar="command")
@@ -85,15 +157,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     catalog_parser = subparsers.add_parser(
         "catalog",
-        help="Справочники инструментов и режимов торгов (заглушка).",
+        help="Справочники инструментов и режимов торгов.",
     )
-    catalog_parser.set_defaults(handler=_unsupported("catalog"))
+    catalog_parser.set_defaults(handler=_cmd_catalog)
 
     universe_parser = subparsers.add_parser(
         "universe",
-        help="Построение исторической совокупности (заглушка).",
+        help="Построение исторической совокупности и запись файла-замка.",
     )
-    universe_parser.set_defaults(handler=_unsupported("universe"))
+    universe_parser.set_defaults(handler=_cmd_universe)
 
     prices_parser = subparsers.add_parser(
         "prices",

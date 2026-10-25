@@ -81,3 +81,49 @@ def test_client_configures_timeout():
         read_timeout=20,
     ) as client:
         assert client.timeout == (5, 20)
+
+
+@responses.activate
+def test_get_retries_on_connection_reset():
+    """Разрыв соединения повторяется до успеха (этап 4, дросселирование)."""
+    url = "https://example.test/history"
+
+    responses.get(
+        url,
+        body=requests.exceptions.ChunkedEncodingError("Connection reset"),
+    )
+
+    with HttpClient(max_retries=1) as client, pytest.raises(requests.exceptions.ChunkedEncodingError):
+        client.get(url)
+
+    assert len(responses.calls) == 2  # первый + один повтор
+
+
+@responses.activate
+def test_get_does_not_retry_http_error():
+    """Ошибка кода ответа (например, 403) не ретраится как сетевой сбой."""
+    url = "https://example.test/history"
+    responses.get(url, status=403)
+
+    with HttpClient(max_retries=3) as client, pytest.raises(requests.HTTPError):
+        client.get(url)
+
+    assert len(responses.calls) == 1
+
+
+def test_client_throttles_between_requests(monkeypatch):
+    """Между запросами выдерживается минимальный интервал."""
+    import time
+
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(time, "sleep", lambda seconds: sleep_calls.append(seconds))
+    monkeypatch.setattr(time, "monotonic", lambda: 100.0)
+
+    with HttpClient(request_interval=0.5) as client:
+        # Первый запрос не ждёт (нет предыдущего).
+        client._throttle()
+        assert sleep_calls == []
+        # Второй — выдерживает интервал 0.5с.
+        client._last_request_at = 100.0
+        client._throttle()
+        assert sleep_calls == [0.5]

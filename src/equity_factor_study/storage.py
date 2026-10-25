@@ -1,7 +1,10 @@
 import hashlib
 import json
+import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 
 def save_response(
@@ -45,3 +48,23 @@ def save_response(
         file.write("\n")
 
     return response_path
+
+
+_RUN_ID_PATTERN = re.compile(r"^\d{8}T\d{6}Z_[a-f0-9]{8}$")
+
+
+def run_dir(*, base_dir: Path, source: str) -> Path:
+    """Создать каталог выгрузки для нового прогона с собственным идентификатором.
+
+    Каталог имеет вид ``<base_dir>/<timestamp>_<run_id>/<source>``, где
+    ``<run_id>`` — короткий уникальный идентификатор. Повторный запуск создания
+    каталога с тем же идентификатором не допускается (защита от перезаписи).
+    """
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    run_id = f"{timestamp}_{uuid4().hex[:8]}"
+    if not _RUN_ID_PATTERN.match(run_id):
+        raise ValueError(f"Невалидный идентификатор прогона: {run_id}")
+
+    output_dir = base_dir / run_id / source
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir

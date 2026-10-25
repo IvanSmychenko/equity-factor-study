@@ -3,11 +3,40 @@
 from datetime import date
 
 import pytest
+import responses
 
 from equity_factor_study.cli import build_parser, main
 from equity_factor_study.config import load_config
 
 PROJECT_ROOT = __import__("pathlib").Path(__file__).resolve().parents[1]
+DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "study.toml"
+
+CATALOG_URL = (
+    "https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json"
+)
+HISTORY_URL = (
+    "https://iss.moex.com/iss/history/engines/stock/markets/shares/boards/TQBR/securities"
+)
+
+
+def _catalog_payload(rows: list[list]) -> dict:
+    columns = [
+        "SECID", "BOARDID", "SHORTNAME", "SECNAME", "SECTYPE",
+        "LISTLEVEL", "ISIN", "LATNAME", "STATUS",
+    ]
+    return {"securities": {"columns": columns, "data": rows}}
+
+
+def _catalog_row(secid: str, sectype: str = "1", isin: str = "") -> list:
+    return [secid, "TQBR", secid, f"{secid} ао", sectype, 1, isin, secid, "A"]
+
+
+def _history_payload(secid: str, value: float, on_date: str = "2014-06-16") -> dict:
+    columns = ["SECID", "BOARDID", "TRADEDATE", "VALUE", "CLOSE"]
+    return {
+        "history": {"columns": columns, "data": [[secid, "TQBR", on_date, value, 1.0]]},
+        "history.cursor": {"columns": ["INDEX", "TOTAL", "PAGESIZE"], "data": [[0, 1, 100]]},
+    }
 
 
 def test_help_lists_commands(capsys):
@@ -17,7 +46,10 @@ def test_help_lists_commands(capsys):
         parser.parse_args(["--help"])
     assert exc_info.value.code == 0
     captured = capsys.readouterr()
-    for command in ("check-config", "probe", "catalog", "universe", "prices", "key-rate", "audit", "panel"):
+    for command in (
+        "check-config", "probe", "catalog", "universe", "prices",
+        "key-rate", "audit", "panel",
+    ):
         assert command in captured.out
 
 
@@ -29,13 +61,78 @@ def test_check_config_exit_zero(capsys):
     assert "2018-06-01" in captured.out  # первый целевой месяц
 
 
-@pytest.mark.parametrize("command", ["probe", "catalog", "universe", "prices", "key-rate", "audit", "panel"])
+@pytest.mark.parametrize("command", ["probe", "prices", "key-rate", "audit", "panel"])
 def test_stub_commands_return_not_implemented(command, capsys):
     """Команды-заглушки выводят сообщение и возвращают код 2."""
     code = main([command])
     assert code == 2
     captured = capsys.readouterr()
     assert "ещё не реализован" in captured.err
+
+
+@responses.activate
+def test_catalog_command_uses_mock(tmp_path, capsys):
+    """catalog: сеть мокается, вывод пишется во временный каталог, а не в data/raw."""
+    responses.get(
+        CATALOG_URL,
+        json=_catalog_payload([
+            _catalog_row("SBER", isin="RU_a"),
+            _catalog_row("LKOH", isin="RU_b"),
+        ]),
+        status=200,
+        match=[responses.matchers.query_param_matcher({"start": 0}, strict_match=False)],
+    )
+    responses.get(
+        CATALOG_URL,
+        json=_catalog_payload([]),
+        status=200,
+        match=[responses.matchers.query_param_matcher({"start": 2}, strict_match=False)],
+    )
+
+    code = main(["--config", str(DEFAULT_CONFIG), "--raw-dir", str(tmp_path), "catalog"])
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "строк" in captured.out
+    assert "Обыкновенных акций: 2" in captured.out
+
+
+@responses.activate
+def test_universe_command_uses_mock(tmp_path):
+    """universe: сеть мокается, замок пишется во временный каталог, а не в configs/."""
+    candidates = ["A", "B", "C"]
+    turnover_map = {"A": 150.0, "B": 400.0, "C": 200.0}
+
+    responses.get(
+        CATALOG_URL,
+        json=_catalog_payload([_catalog_row(c, isin=f"RU_{c}") for c in candidates]),
+        status=200,
+        match=[responses.matchers.query_param_matcher({"start": 0}, strict_match=False)],
+    )
+    responses.get(
+        CATALOG_URL,
+        json=_catalog_payload([]),
+        status=200,
+        match=[responses.matchers.query_param_matcher({"start": 3}, strict_match=False)],
+    )
+    for candidate in candidates:
+        responses.get(
+            f"{HISTORY_URL}/{candidate}.json",
+            json=_history_payload(candidate, turnover_map[candidate]),
+            status=200,
+            match=[responses.matchers.query_param_matcher({"start": 0}, strict_match=False)],
+        )
+
+    # Артефакты этапа 4 пишутся рядом с конфигурацией: копируем её во временный
+    # каталог, чтобы не засорять реальный configs/.
+    tmp_config_dir = tmp_path / "configs"
+    tmp_config_dir.mkdir()
+    tmp_config = tmp_config_dir / "study.toml"
+    tmp_config.write_text(DEFAULT_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+
+    code = main(["--config", str(tmp_config), "--raw-dir", str(tmp_path), "universe"])
+    assert code == 0
+    assert (tmp_config_dir / "universe.lock.toml").exists()
+    assert (tmp_config_dir / "universe_exclusions.csv").exists()
 
 
 def test_missing_config_returns_one(capsys, tmp_path):
