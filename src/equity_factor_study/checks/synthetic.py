@@ -121,3 +121,57 @@ def build_synthetic_panel(**overrides):
         key_rate=build_synthetic_key_rate(),
         **overrides,
     )
+
+
+def build_long_continuous_panel(
+    *,
+    start: date = date(2014, 1, 1),
+    end: date = date(2026, 9, 1),
+    secids: list[str] | None = None,
+    seed: int = 7,
+) -> pd.DataFrame:
+    """Непрерывная панель на весь период наблюдения (для модельного слоя).
+
+    Генерирует детерминированный ряд цены для нескольких инструментов на
+    каждый месяц периода с полным покрытием (без пропусков). Используется,
+    чтобы упражнять обучающее окно 48 месяцев и контрольные даты Б.6.
+    """
+    import random
+
+    from equity_factor_study.pipelines.monthly import build_monthly_panel
+
+    secids = secids or ["A", "B"]
+    rng = random.Random(seed)
+    daily_rows = []
+    for idx, secid in enumerate(secids):
+        price = 100.0 * (1.0 + 0.05 * idx)
+        for month in _month_iter(_months_between(start, end) + 1, start):
+            step = 1.0 if (month.month % 2 == 1) else -1.0
+            factor = 1.0 + 0.015 * step + 0.002 * rng.random()
+            price = price * factor
+            trade_date = _last_trading_day(month)
+            daily_rows.append(
+                {"secid": secid, "trade_date": trade_date, "close": round(price, 4), "value": 1.0}
+            )
+    daily = pd.DataFrame(daily_rows)
+
+    # Детерминированная ключевая ставка на весь период.
+    kr_rows = []
+    for month in _month_iter(_months_between(start, end) + 1, start):
+        kr_rows.append({"date": _last_trading_day(month), "rate": 5.5 + 0.5 * (month.month % 5)})
+    key_rate = pd.DataFrame(kr_rows)
+
+    return build_monthly_panel(
+        daily,
+        secids=secids,
+        from_month=start,
+        to_month=end,
+        max_trading_days=5,
+        momentum_window=3,
+        volatility_window=3,
+        key_rate=key_rate,
+    )
+
+
+def _months_between(start: date, end: date) -> int:
+    return (end.year - start.year) * 12 + (end.month - start.month)

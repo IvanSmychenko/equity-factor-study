@@ -51,7 +51,7 @@ def test_help_lists_commands(capsys):
     captured = capsys.readouterr()
     for command in (
         "check-config", "probe", "catalog", "universe", "prices",
-        "key-rate", "audit", "panel", "acceptance",
+        "key-rate", "audit", "panel", "acceptance", "evaluate",
     ):
         assert command in captured.out
 
@@ -306,3 +306,44 @@ def test_acceptance_command_writes_report(tmp_path, capsys):
     assert (report_dir / "acceptance_report.json").exists()
     captured = capsys.readouterr()
     assert "Отчёт приёмки" in captured.out
+
+
+def test_evaluate_command_writes_report(tmp_path, capsys):
+    """evaluate обучает модель на панели и пишет отчёт (без сети)."""
+    from datetime import date
+
+    from equity_factor_study.checks.synthetic import build_long_continuous_panel
+
+    tmp_config_dir = tmp_path / "configs"
+    tmp_config_dir.mkdir()
+    tmp_config = tmp_config_dir / "study.toml"
+    tmp_config.write_text(DEFAULT_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+
+    processed_dir = tmp_path / "processed"
+    processed_dir.mkdir()
+    panel = build_long_continuous_panel(start=date(2014, 1, 1), end=date(2026, 9, 1))
+    out = panel.copy()
+    out["month"] = out["month"].map(lambda d: d.isoformat() if hasattr(d, "isoformat") else d)
+    out["price_date"] = out["price_date"].map(lambda d: d.isoformat() if hasattr(d, "isoformat") else d)
+    out.to_csv(processed_dir / "monthly_panel.csv", index=False)
+
+    report_dir = tmp_path / "reports"
+    code = main([
+        "--config", str(tmp_config), "--processed-dir", str(processed_dir),
+        "--report-dir", str(report_dir), "evaluate",
+    ])
+    assert code == 0
+    assert (report_dir / "model_evaluation.json").exists()
+    captured = capsys.readouterr()
+    assert "Оценка модели" in captured.out
+
+
+def test_evaluate_command_missing_panel_returns_one(tmp_path, capsys):
+    tmp_config_dir = tmp_path / "configs"
+    tmp_config_dir.mkdir()
+    tmp_config = tmp_config_dir / "study.toml"
+    tmp_config.write_text(DEFAULT_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+    code = main([
+        "--config", str(tmp_config), "--processed-dir", str(tmp_path), "evaluate",
+    ])
+    assert code == 1

@@ -339,6 +339,73 @@ def _cmd_acceptance(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_evaluate(arguments: argparse.Namespace) -> int:
+    """Оценить модель и полезность факторов на панели."""
+    config = _load_config(arguments)
+    from equity_factor_study.model.orchestrator import load_panel, run_model_evaluation
+
+    panel_path = arguments.processed_dir / "monthly_panel.csv"
+    if not panel_path.exists():
+        print(f"Панель не найдена: {panel_path.resolve()}", file=sys.stderr)
+        return 1
+
+    feature_columns = _feature_columns_from_config(config)
+    panel = load_panel(panel_path)
+
+    report = run_model_evaluation(
+        panel,
+        feature_columns=feature_columns,
+        training_window_months=config.model.training_window_months,
+        refit_frequency=config.model.refit_frequency,
+        first_target_month=config.first_target_month,
+        development_target_end=config.period.development_target_end,
+        last_month=config.period.observation_end,
+    )
+
+    _write_evaluation_report(arguments.report_dir, report)
+    print(f"Оценка модели: прогнозов={report.full_metrics.forecast_count}")
+    print(f"  MSE (оценка): {report.full_metrics.mse:.6f}")
+    print(f"  MAE (оценка): {report.full_metrics.mae:.6f}")
+    return 0
+
+
+def _feature_columns_from_config(config) -> list[str]:
+    """Список активных признаков по конфигурации (согласован со схемой панели)."""
+    features = config.features
+    columns = []
+    if features.return_1m:
+        columns.append("return_1m")
+    if features.momentum_prev_3m:
+        columns.append("momentum_prev_3m")
+    if features.volatility_3m:
+        columns.append("volatility_3m")
+    if features.key_rate_pct:
+        columns.append("key_rate_pct")
+    if features.key_rate_change_pp:
+        columns.append("key_rate_change_pp")
+    return columns
+
+
+def _write_evaluation_report(report_dir: Path, report) -> None:
+    """Записать отчёт оценки модели в JSON."""
+    import json
+
+    report_dir = Path(report_dir)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "feature_columns": report.feature_columns,
+        "evaluation": {
+            "forecast_count": report.full_metrics.forecast_count,
+            "mse": report.full_metrics.mse,
+            "mae": report.full_metrics.mae,
+        },
+        "factor_usefulness": report.factor_usefulness,
+    }
+    path = report_dir / "model_evaluation.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"Отчёт оценки: {path.resolve()}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Построить парсер аргументов командной строки."""
     parser = argparse.ArgumentParser(
@@ -439,6 +506,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Каталог для отчёта приёмки (по умолчанию data/reports).",
     )
     acceptance_parser.set_defaults(handler=_cmd_acceptance)
+
+    evaluate_parser = subparsers.add_parser(
+        "evaluate",
+        help="Оценка модели и полезности факторов на построенной панели.",
+    )
+    evaluate_parser.set_defaults(handler=_cmd_evaluate)
 
     return parser
 
