@@ -1,6 +1,7 @@
 """Тесты CLI этапа 1: справка, код возврата и обработка ошибок."""
 
 from datetime import date
+from pathlib import Path
 
 import pytest
 import responses
@@ -10,6 +11,8 @@ from equity_factor_study.config import load_config
 
 PROJECT_ROOT = __import__("pathlib").Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "study.toml"
+
+CBR_URL = "https://www.cbr.ru/DailyInfoWebServ/DailyInfo.asmx"
 
 CATALOG_URL = (
     "https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json"
@@ -61,7 +64,7 @@ def test_check_config_exit_zero(capsys):
     assert "2018-06-01" in captured.out  # первый целевой месяц
 
 
-@pytest.mark.parametrize("command", ["probe", "prices", "key-rate", "audit", "panel"])
+@pytest.mark.parametrize("command", ["probe", "audit", "panel"])
 def test_stub_commands_return_not_implemented(command, capsys):
     """Команды-заглушки выводят сообщение и возвращают код 2."""
     code = main([command])
@@ -154,3 +157,72 @@ def test_control_dates_from_project_config():
     assert config.first_observation_month == date(2014, 5, 1)
     assert config.first_target_month == date(2018, 6, 1)
     assert config.period_length_months == 153
+
+
+def _setup_tmp_config(tmp_path):
+    """Копия конфигурации + замок состава с инструментами A, B."""
+    tmp_config_dir = tmp_path / "configs"
+    tmp_config_dir.mkdir()
+    tmp_config = tmp_config_dir / "study.toml"
+    tmp_config.write_text(DEFAULT_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_config_dir / "universe.lock.toml").write_text(
+        "[universe]\nsecids = [\"A\", \"B\"]\n", encoding="utf-8"
+    )
+    return tmp_config
+
+
+@responses.activate
+def test_prices_command_uses_mock(tmp_path, capsys):
+    """prices: сеть мокается, дневная таблица пишется во временный каталог."""
+    tmp_config = _setup_tmp_config(tmp_path)
+    def _payload(secid, rows):
+        return {
+            "history": {"columns": ["SECID", "BOARDID", "TRADEDATE", "CLOSE", "VALUE"], "data": rows},
+            "history.cursor": {"columns": ["INDEX", "TOTAL", "PAGESIZE"], "data": [[0, len(rows), 100]]},
+        }
+    for secid in ["A", "B"]:
+        responses.get(
+            f"{HISTORY_URL}/{secid}.json",
+            json=_payload(secid, [[secid, "TQBR", "2014-01-06", 10.0, 100.0]]),
+            status=200,
+            match=[responses.matchers.query_param_matcher({"start": 0}, strict_match=False)],
+        )
+        responses.get(
+            f"{HISTORY_URL}/{secid}.json",
+            json=_payload(secid, []),
+            status=200,
+            match=[responses.matchers.query_param_matcher({"start": 1}, strict_match=False)],
+        )
+
+    code = main(["--config", str(tmp_config), "--raw-dir", str(tmp_path), "--interim-dir", str(tmp_path), "prices"])
+    assert code == 0
+    assert (tmp_path / "daily_prices.csv").exists()
+    assert "Загружено инструментов: 2" in capsys.readouterr().out
+
+
+def test_prices_command_missing_lock_returns_one(tmp_path, capsys):
+    """prices без файла-замка состава завершается кодом 1."""
+    tmp_config_dir = tmp_path / "configs"
+    tmp_config_dir.mkdir()
+    tmp_config = tmp_config_dir / "study.toml"
+    tmp_config.write_text(DEFAULT_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+
+    code = main(["--config", str(tmp_config), "--interim-dir", str(tmp_path), "prices"])
+    assert code == 1
+
+
+@responses.activate
+def test_key_rate_command_uses_mock(tmp_path, capsys):
+    """key-rate: сеть мокается, ряд пишется во временный каталог."""
+    tmp_config = _setup_tmp_config(tmp_path)
+    responses.post(
+        CBR_URL,
+        body=(Path(__file__).resolve().parent / "fixtures" / "cbr_keyrate_2014-01.xml").read_bytes(),
+        status=200,
+        content_type="text/xml",
+    )
+
+    code = main(["--config", str(tmp_config), "--raw-dir", str(tmp_path), "--interim-dir", str(tmp_path), "key-rate"])
+    assert code == 0
+    assert (tmp_path / "key_rate.csv").exists()
+    assert "Строк в ряду ставки" in capsys.readouterr().out

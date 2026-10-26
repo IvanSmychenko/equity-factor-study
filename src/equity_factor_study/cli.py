@@ -20,6 +20,7 @@ from equity_factor_study.storage import run_dir
 
 DEFAULT_CONFIG_PATH = Path("configs/study.toml")
 DEFAULT_RAW_DIR = Path("data") / "raw"
+DEFAULT_INTERIM_DIR = Path("data") / "interim"
 
 # Код возврата для команд-заглушек, ещё не реализованных в текущем этапе.
 _EXIT_NOT_IMPLEMENTED = 2
@@ -120,6 +121,77 @@ def _cmd_universe(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _load_lock_secids(arguments: argparse.Namespace) -> list[str]:
+    """Прочитать состав выборки из файла-замка рядом с конфигурацией."""
+    from equity_factor_study.pipelines.universe import load_lock_file
+
+    lock_path = arguments.config.resolve().parent / "universe.lock.toml"
+    return load_lock_file(lock_path=lock_path)
+
+
+def _cmd_prices(arguments: argparse.Namespace) -> int:
+    """Загрузить дневные цены по выборке и нормализовать в дневную таблицу."""
+    config = _load_config(arguments)
+    from equity_factor_study.pipelines.prices import collect_prices, write_daily_prices
+    from equity_factor_study.pipelines.universe import UniverseError
+
+    try:
+        secids = _load_lock_secids(arguments)
+    except UniverseError as exc:
+        print(f"Ошибка выборки: {exc}", file=sys.stderr)
+        return 1
+    if not secids:
+        print("Пустая выборка: нет инструментов для загрузки цен.", file=sys.stderr)
+        return 1
+
+    with HttpClient() as http:
+        client = MOEXClient(http=http, raw_dir=run_dir(base_dir=arguments.raw_dir, source="moex"))
+        result = collect_prices(
+            client=client,
+            secids=secids,
+            board=config.universe.selection_board,
+            from_date=config.period.download_start,
+            to_date=config.period.observation_end,
+        )
+
+    out_path = write_daily_prices(result.table, arguments.interim_dir / "daily_prices.csv")
+    print(f"Загружено инструментов: {len(result.summaries)}")
+    print(f"Строк в дневной таблице: {result.rows}")
+    print(f"Сохранено: {out_path.resolve()}")
+    for summary in result.summaries:
+        status = "OK" if summary.complete else f"пропусков: {summary.missing_trading_days}"
+        print(
+            f"  {summary.secid}: {summary.rows} строк, "
+            f"{summary.date_from}..{summary.date_to}, {status}"
+        )
+    return 0
+
+
+def _cmd_key_rate(arguments: argparse.Namespace) -> int:
+    """Загрузить дневной ряд ключевой ставки и нормализовать его."""
+    config = _load_config(arguments)
+    from equity_factor_study.clients.cbr import CBRClient
+    from equity_factor_study.pipelines.key_rate import collect_key_rate, write_daily_key_rate
+
+    with HttpClient() as http:
+        client = CBRClient(http=http, raw_dir=run_dir(base_dir=arguments.raw_dir, source="cbr"))
+        result = collect_key_rate(
+            client=client,
+            from_date=config.period.observation_start,
+            to_date=config.period.observation_end,
+        )
+
+    out_path = write_daily_key_rate(result.table, arguments.interim_dir / "key_rate.csv")
+    summary = result.summary
+    print(f"Строк в ряду ставки: {summary.rows}")
+    print(f"Период: {summary.date_from}..{summary.date_to}")
+    print(f"Разрывов покрытия: {summary.gaps}")
+    status = "OK" if summary.complete else "НЕПОЛНОЕ ПОКРЫТИЕ"
+    print(f"Статус: {status}")
+    print(f"Сохранено: {out_path.resolve()}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Построить парсер аргументов командной строки."""
     parser = argparse.ArgumentParser(
@@ -137,6 +209,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_RAW_DIR,
         help=f"Каталог выгрузки исходных данных (по умолчанию {DEFAULT_RAW_DIR}).",
+    )
+    parser.add_argument(
+        "--interim-dir",
+        type=Path,
+        default=DEFAULT_INTERIM_DIR,
+        help=f"Каталог промежуточных таблиц (по умолчанию {DEFAULT_INTERIM_DIR}).",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True, metavar="command")
@@ -169,15 +247,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     prices_parser = subparsers.add_parser(
         "prices",
-        help="Загрузка дневных цен по выборке (заглушка).",
+        help="Загрузка дневных цен по выборке.",
     )
-    prices_parser.set_defaults(handler=_unsupported("prices"))
+    prices_parser.set_defaults(handler=_cmd_prices)
 
     key_rate_parser = subparsers.add_parser(
         "key-rate",
-        help="Загрузка дневного ряда ключевой ставки (заглушка).",
+        help="Загрузка дневного ряда ключевой ставки.",
     )
-    key_rate_parser.set_defaults(handler=_unsupported("key-rate"))
+    key_rate_parser.set_defaults(handler=_cmd_key_rate)
 
     audit_parser = subparsers.add_parser(
         "audit",
