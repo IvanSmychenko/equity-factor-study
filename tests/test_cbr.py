@@ -16,7 +16,7 @@ from equity_factor_study.clients.cbr import (
     KeyRateDownload,
     parse_key_rate,
 )
-from equity_factor_study.http import HttpClient
+from equity_factor_study.http_client import HttpClient
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 

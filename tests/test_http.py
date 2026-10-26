@@ -2,7 +2,7 @@ import pytest
 import requests
 import responses
 
-from equity_factor_study.http import HttpClient
+from equity_factor_study.http_client import HttpClient
 
 
 @responses.activate

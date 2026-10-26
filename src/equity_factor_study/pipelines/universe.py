@@ -138,25 +138,49 @@ def write_lock_file(
     board: str,
     year: int,
     selected: list[str],
+    turnover: pd.DataFrame | None = None,
     exclusions: pd.DataFrame | None = None,
+    formation_date: date | None = None,
+    exclusions_relative: str | None = None,
 ) -> Path:
-    """Записать файл-замок состава выборки в TOML-формате."""
+    """Записать файл-замок состава выборки в TOML-формате.
+
+    Замок фиксирует фактический состав и его происхождение: перечень
+    отобранных инструментов, оборот по каждому, дату формирования, версию
+    правила отбора и ссылку на файл исключений.
+    """
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
     secids = ", ".join(f'"{secid}"' for secid in selected)
     lines = [
         "# Замок состава исторической совокупности.",
-        "# Регенерируется этапом 4; изменение вручную не допускается.",
+        "# Формируется этапом 4; изменение вручную не допускается.",
         f'# config_hash = "{config_hash}"',
         "",
         "[universe]",
         f'version = "{version}"',
         f'selection_board = "{board}"',
         f"selection_year = {year}",
+        f'formation_date = "{(formation_date or date.today()).isoformat()}"',
         f"secids = [{secids}]",
     ]
-    if exclusions is not None and not exclusions.empty:
+    if exclusions_relative:
+        lines.append(f'exclusions_file = "{exclusions_relative}"')
+
+    # Оборот по каждому отобранному инструменту (для воспроизводимости).
+    if turnover is not None and not turnover.empty:
         lines.append("")
+        for secid in selected:
+            row = turnover[turnover["secid"] == secid]
+            if row.empty:
+                continue
+            amount = row.iloc[0]["turnover"] if "turnover" in row.columns else row.iloc[0]["turnover_" + str(year)]
+            lines.append("[[instruments]]")
+            lines.append(f'secid = "{secid}"')
+            lines.append(f"turnover = {amount}")
+            lines.append("")
+
+    if exclusions is not None and not exclusions.empty:
         lines.append("[exclusions]")
         lines.append('reason = "not_selected_low_turnover"')
         excluded = ", ".join(f'"{secid}"' for secid in exclusions["secid"])
@@ -191,6 +215,62 @@ def write_exclusions(
     return exclusions_path
 
 
+# Допустимые основания ручного исключения (раздел 4 уточнения).
+# Исключение допускается только по причинам качества данных. Запрещены любые
+# основания, связанные с ожидаемой доходностью или «непривычностью» эмитента.
+ALLOWED_MANUAL_REASONS = {
+    "data_gap_unexplained",  # разрыв истории без корпоративного события
+    "code_change_unconfirmed",  # смена кода/режима без подтверждённой непрерывности
+    "mostly_no_trading",  # отсутствие торгов большую часть периода
+    "security_type_mismatch",  # расхождение справочных данных о типе инструмента
+}
+
+
+def append_manual_exclusions(
+    *,
+    exclusions_path: Path,
+    rows: list[dict],
+) -> Path:
+    """Добавить результат ручной проверки в перечень исключений.
+
+    ``rows`` — список словарей с ключами ``secid``, ``reason`` и, по желанию,
+    ``turnover``, ``rank``. Причина обязана входить в ``ALLOWED_MANUAL_REASONS``;
+    иначе возникает ``UniverseError`` (ручное исключение по недопустимому
+    основанию возвращает смещение отбора). Записанная причина дополняется
+    пояснением о подтверждающих данных.
+    """
+    records: list[dict] = []
+    for row in rows:
+        reason = row.get("reason")
+        if reason not in ALLOWED_MANUAL_REASONS:
+            raise UniverseError(
+                f"Недопустимое основание ручного исключения: {reason!r}. "
+                "Допускаются только причины качества данных: "
+                + ", ".join(sorted(ALLOWED_MANUAL_REASONS))
+            )
+        records.append(
+            {
+                "secid": row["secid"],
+                "reason": reason,
+                "turnover": row.get("turnover"),
+                "rank": row.get("rank"),
+            }
+        )
+
+    # Объединить с существующим перечнем (если он есть) без дубликатов по secid.
+    existing = pd.DataFrame()
+    if exclusions_path.exists():
+        try:
+            existing = pd.read_csv(exclusions_path)
+        except pd.errors.EmptyDataError:
+            existing = pd.DataFrame()
+    new_frame = pd.DataFrame(records)
+    combined = pd.concat([existing, new_frame], ignore_index=True)
+    combined = combined.drop_duplicates(subset=["secid"], keep="last")
+    combined.to_csv(exclusions_path, index=False)
+    return exclusions_path
+
+
 def build_and_write_universe(
     *,
     client: MOEXClient,
@@ -202,13 +282,24 @@ def build_and_write_universe(
     board: str,
     year: int,
     target_size: int,
+    force: bool = False,
 ) -> UniverseResult:
     """Построить выборку из справочной таблицы и записать lock + исключения.
 
     Эта функция объединяет этап 4 целиком: принимает уже собранный справочник
     (обыкновенные акции), собирает оборот за год, отбирает ``target_size``
     инструментов и записывает файл-замок состава и перечень исключений.
+
+    Защита от перезаписи замка (правило раздела 3 уточнения): при уже
+    существующем ``lock_path`` построение не перезаписывает его, а завершается
+    ошибкой с предложением явно подтвердить пересборку, если ``force=False``.
     """
+    if not force and lock_path.exists():
+        raise UniverseError(
+            "Замок состава уже существует; автоматическая перезапись не "
+            "допускается. Подтвердите пересборку явно (force=True/--force), "
+            "иначе результат потеряет сопоставимость с предыдущими прогонами."
+        )
     if catalog_table.empty or "SECID" not in catalog_table.columns:
         raise UniverseError("Справочник пуст: нечего включать в выборку")
 
@@ -228,7 +319,10 @@ def build_and_write_universe(
         board=board,
         year=year,
         selected=result.selected,
+        turnover=result.turnover,
         exclusions=result.reasons,
+        formation_date=date.today(),
+        exclusions_relative=exclusions_path.name,
     )
     write_exclusions(exclusions_path=exclusions_path, reasons=result.reasons)
     return result

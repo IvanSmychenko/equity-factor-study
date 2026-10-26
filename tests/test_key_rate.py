@@ -8,7 +8,7 @@ import pytest
 import responses
 
 from equity_factor_study.clients.cbr import CBR_ENDPOINT, CBRClient
-from equity_factor_study.http import HttpClient
+from equity_factor_study.http_client import HttpClient
 from equity_factor_study.pipelines.key_rate import (
     DAILY_COLUMNS,
     collect_key_rate,

@@ -5,7 +5,7 @@ import pytest
 import responses
 
 from equity_factor_study.clients.moex import MOEXClient, MOEXHistoryError
-from equity_factor_study.http import HttpClient
+from equity_factor_study.http_client import HttpClient
 
 HISTORY_URL = (
     "https://iss.moex.com/iss/history/engines/stock/markets/shares/boards/TQBR/securities/SBER.json"

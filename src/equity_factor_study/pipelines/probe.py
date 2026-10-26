@@ -3,7 +3,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from equity_factor_study.clients.moex import MOEXClient
-from equity_factor_study.http import HttpClient
+from equity_factor_study.http_client import HttpClient
 
 
 def main() -> None:

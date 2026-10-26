@@ -7,7 +7,7 @@ import pytest
 import responses
 
 from equity_factor_study.clients.moex import MOEXClient
-from equity_factor_study.http import HttpClient
+from equity_factor_study.http_client import HttpClient
 from equity_factor_study.pipelines.prices import (
     DAILY_COLUMNS,
     PricesError,

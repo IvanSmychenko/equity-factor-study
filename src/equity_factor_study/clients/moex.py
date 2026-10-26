@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from equity_factor_study.http import HttpClient
+from equity_factor_study.http_client import HttpClient
 from equity_factor_study.storage import save_response
 
 

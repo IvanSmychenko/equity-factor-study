@@ -17,7 +17,7 @@ import pandas as pd
 
 from equity_factor_study.clients.moex import MOEXClient
 from equity_factor_study.config import ConfigError, StudyConfig, load_config
-from equity_factor_study.http import HttpClient
+from equity_factor_study.http_client import HttpClient
 from equity_factor_study.storage import run_dir
 
 DEFAULT_CONFIG_PATH = Path("configs/study.toml")
@@ -117,11 +117,42 @@ def _cmd_universe(arguments: argparse.Namespace) -> int:
             board=config.universe.selection_board,
             year=config.universe.turnover_year,
             target_size=config.universe.target_size,
+            force=bool(getattr(arguments, "force", False)),
         )
 
     print(f"Отобрано инструментов: {len(result.selected)}: {', '.join(result.selected)}")
     print(f"Исключено кандидатов: {len(result.reasons)}")
     print(f"Замок состава: {config_dir / 'universe.lock.toml'}")
+    return 0
+
+
+def _cmd_review(arguments: argparse.Namespace) -> int:
+    """Внести результат ручной проверки состава в перечень исключений.
+
+    Ручное исключение допускается только по причинам качества данных; любое
+    иное основание (например, ожидаемая доходность эмитента) отклоняется.
+    """
+    from equity_factor_study.pipelines.universe import (
+        ALLOWED_MANUAL_REASONS,
+        UniverseError,
+        append_manual_exclusions,
+    )
+
+    rows = []
+    for secid, reason in arguments.exclude:
+        rows.append({"secid": secid, "reason": reason})
+    if not rows:
+        print("Не указаны исключения. Используйте --exclude SECID:PRICHINA.")
+        print("Допустимые причины: " + ", ".join(sorted(ALLOWED_MANUAL_REASONS)))
+        return 1
+
+    exclusions_path = arguments.config.resolve().parent / "universe_exclusions.csv"
+    try:
+        append_manual_exclusions(exclusions_path=exclusions_path, rows=rows)
+    except UniverseError as exc:
+        print(f"Ошибка: {exc}")
+        return 2
+    print(f"Добавлены исключения в: {exclusions_path}")
     return 0
 
 
@@ -469,7 +500,26 @@ def build_parser() -> argparse.ArgumentParser:
         "universe",
         help="Построение исторической совокупности и запись файла-замка.",
     )
+    universe_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Явное подтверждение пересборки при существующем замке состава.",
+    )
     universe_parser.set_defaults(handler=_cmd_universe)
+
+    review_parser = subparsers.add_parser(
+        "review",
+        help="Ручная проверка состава: внести исключения по качеству данных.",
+    )
+    review_parser.add_argument(
+        "--exclude",
+        action="append",
+        nargs=2,
+        metavar=("SECID", "PRICHINA"),
+        default=[],
+        help="Исключить инструмент с указанной причиной (можно повторять).",
+    )
+    review_parser.set_defaults(handler=_cmd_review)
 
     prices_parser = subparsers.add_parser(
         "prices",

@@ -138,6 +138,26 @@ def test_universe_command_uses_mock(tmp_path):
     assert (tmp_config_dir / "universe_exclusions.csv").exists()
 
 
+def test_review_command_adds_manual_exclusion(tmp_path):
+    """review: допустимая причина записывается, недопустимая отклоняется."""
+    tmp_config_dir = tmp_path / "configs"
+    tmp_config_dir.mkdir()
+    tmp_config = tmp_config_dir / "study.toml"
+    tmp_config.write_text(DEFAULT_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+
+    code = main(["--config", str(tmp_config), "review", "--exclude", "GAZP", "data_gap_unexplained"])
+    assert code == 0
+    exclusions_path = tmp_config_dir / "universe_exclusions.csv"
+    content = exclusions_path.read_text(encoding="utf-8")
+    assert "GAZP" in content
+    assert "data_gap_unexplained" in content
+
+    # Недопустимое основание отклоняется.
+    code = main(["--config", str(tmp_config), "review", "--exclude", "AAA", "unusual_issuer"])
+    assert code == 2
+    assert "AAA" not in exclusions_path.read_text(encoding="utf-8")
+
+
 def test_missing_config_returns_one(capsys, tmp_path):
     code = main(["--config", str(tmp_path / "missing.toml"), "check-config"])
     assert code == 1

@@ -1,12 +1,14 @@
 """Тесты этапа 4: справочники и историческая совокупность."""
 
 
+import tomllib
+
 import pandas as pd
 import pytest
 import responses
 
 from equity_factor_study.clients.moex import MOEXClient
-from equity_factor_study.http import HttpClient
+from equity_factor_study.http_client import HttpClient
 from equity_factor_study.pipelines.catalog import CatalogResult, load_catalog
 from equity_factor_study.pipelines.universe import (
     UniverseError,
@@ -295,3 +297,100 @@ def test_build_and_write_universe_empty_catalog_raises(tmp_path):
                 year=2014,
                 target_size=10,
             )
+
+def test_write_lock_file_records_turnover_and_formation(tmp_path):
+    from datetime import date
+
+    lock_path = tmp_path / "configs" / "universe.lock.toml"
+    turnover = pd.DataFrame({"secid": ["SBER", "LKOH"], "turnover": [300.0, 200.0]})
+    write_lock_file(
+        lock_path=lock_path,
+        config_hash="hash123",
+        version="0.1",
+        board="TQBR",
+        year=2014,
+        selected=["SBER", "LKOH"],
+        turnover=turnover,
+        formation_date=date(2024, 1, 1),
+        exclusions_relative="universe_exclusions.csv",
+    )
+    with lock_path.open("rb") as file:
+        data = tomllib.load(file)
+    assert "instruments" in data
+    tickers = {entry["secid"]: entry["turnover"] for entry in data["instruments"]}
+    assert tickers == {"SBER": 300.0, "LKOH": 200.0}
+    assert data["universe"]["formation_date"] == "2024-01-01"
+    assert data["universe"]["exclusions_file"] == "universe_exclusions.csv"
+
+
+@responses.activate
+def test_build_and_write_universe_existing_lock_raises_unless_forced(tmp_path):
+    from equity_factor_study.pipelines.universe import build_and_write_universe
+
+    candidates = ["A", "B", "C"]
+    turnover_map = {"A": 150.0, "B": 400.0, "C": 200.0}
+    for candidate in candidates:
+        responses.get(
+            f"{HISTORY_URL}/{candidate}.json",
+            json=_history_payload(candidate, turnover_map[candidate]),
+            status=200,
+            match=[responses.matchers.query_param_matcher({"start": 0}, strict_match=False)],
+        )
+
+    catalog_df = pd.DataFrame({"SECID": candidates, "SECTYPE": ["1"] * 3})
+    lock_path = tmp_path / "configs" / "universe.lock.toml"
+    exclusions_path = tmp_path / "exclusions.csv"
+
+    with HttpClient() as http:
+        client = MOEXClient(http=http, raw_dir=tmp_path / "run1")
+        # Первый прогон создаёт замок.
+        build_and_write_universe(
+            client=client, lock_path=lock_path, exclusions_path=exclusions_path,
+            catalog_table=catalog_df, config_hash="cfg", version="0.1",
+            board="TQBR", year=2014, target_size=2,
+        )
+        original = lock_path.read_bytes()
+        # Повторный прогон без подтверждения завершается ошибкой и не перезаписывает.
+        with pytest.raises(UniverseError, match="перезапись"):
+            build_and_write_universe(
+                client=client, lock_path=lock_path, exclusions_path=exclusions_path,
+                catalog_table=catalog_df, config_hash="cfg", version="0.1",
+                board="TQBR", year=2014, target_size=2,
+            )
+        assert lock_path.read_bytes() == original
+    # Явное подтверждение пересборки (force) разрешает перезапись.
+    with HttpClient() as http:
+        client = MOEXClient(http=http, raw_dir=tmp_path / "run2")
+        result = build_and_write_universe(
+            client=client, lock_path=lock_path, exclusions_path=exclusions_path,
+            catalog_table=catalog_df, config_hash="cfg", version="0.1",
+            board="TQBR", year=2014, target_size=2, force=True,
+        )
+        assert result.selected == ["B", "C"]
+
+
+def test_append_manual_exclusions_validates_reasons(tmp_path):
+    from equity_factor_study.pipelines.universe import (
+        ALLOWED_MANUAL_REASONS,
+        UniverseError,
+        append_manual_exclusions,
+    )
+
+    path = tmp_path / "exclusions.csv"
+    # Допустимая причина (качество данных).
+    append_manual_exclusions(
+        exclusions_path=path,
+        rows=[{"secid": "GAZP", "reason": "data_gap_unexplained", "turnover": 50.0, "rank": 11}],
+    )
+    content = path.read_text(encoding="utf-8")
+    assert "data_gap_unexplained" in content
+    assert "GAZP" in content
+
+    # Недопустимое основание (связано с доходностью) отклоняется.
+    with pytest.raises(UniverseError, match="Недопустимое основание"):
+        append_manual_exclusions(
+            exclusions_path=path,
+            rows=[{"secid": "AAA", "reason": "unusual_issuer_expected_low_return"}],
+        )
+    assert "AAA" not in path.read_text(encoding="utf-8")
+    assert "data_gap_unexplained" in ALLOWED_MANUAL_REASONS
