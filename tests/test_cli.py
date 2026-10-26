@@ -64,7 +64,7 @@ def test_check_config_exit_zero(capsys):
     assert "2018-06-01" in captured.out  # первый целевой месяц
 
 
-@pytest.mark.parametrize("command", ["probe", "audit", "panel"])
+@pytest.mark.parametrize("command", ["probe", "panel"])
 def test_stub_commands_return_not_implemented(command, capsys):
     """Команды-заглушки выводят сообщение и возвращают код 2."""
     code = main([command])
@@ -226,3 +226,39 @@ def test_key_rate_command_uses_mock(tmp_path, capsys):
     assert code == 0
     assert (tmp_path / "key_rate.csv").exists()
     assert "Строк в ряду ставки" in capsys.readouterr().out
+
+
+def test_audit_command_writes_reports(tmp_path, capsys):
+    """audit: читает дневную таблицу цен и пишет отчёты во временный каталог."""
+    tmp_config_dir = tmp_path / "configs"
+    tmp_config_dir.mkdir()
+    tmp_config = tmp_config_dir / "study.toml"
+    tmp_config.write_text(DEFAULT_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+
+    # Дневная таблица цен с дефектами (нулевая цена и большой скачок).
+    prices = (
+        "secid,trade_date,close,value\n"
+        "A,2014-01-06,10.0,100.0\n"
+        "A,2014-01-07,0.0,120.0\n"
+        "A,2014-01-08,100.0,130.0\n"
+    )
+    (tmp_path / "daily_prices.csv").write_text(prices, encoding="utf-8")
+
+    report_dir = tmp_path / "reports"
+    code = main(["--config", str(tmp_config), "--interim-dir", str(tmp_path), "--report-dir", str(report_dir), "audit"])
+    assert code == 0
+    assert (report_dir / "findings.csv").exists()
+    assert (report_dir / "quality_summary.csv").exists()
+    assert (report_dir / "corporate_events.csv").exists()
+    assert "Найдено замечаний" in capsys.readouterr().out
+
+
+def test_audit_command_missing_prices_returns_one(tmp_path, capsys):
+    """audit без дневной таблицы цен завершается кодом 1."""
+    tmp_config_dir = tmp_path / "configs"
+    tmp_config_dir.mkdir()
+    tmp_config = tmp_config_dir / "study.toml"
+    tmp_config.write_text(DEFAULT_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+
+    code = main(["--config", str(tmp_config), "--interim-dir", str(tmp_path), "audit"])
+    assert code == 1

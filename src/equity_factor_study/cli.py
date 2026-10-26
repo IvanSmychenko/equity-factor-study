@@ -13,6 +13,8 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+import pandas as pd
+
 from equity_factor_study.clients.moex import MOEXClient
 from equity_factor_study.config import ConfigError, StudyConfig, load_config
 from equity_factor_study.http import HttpClient
@@ -21,6 +23,7 @@ from equity_factor_study.storage import run_dir
 DEFAULT_CONFIG_PATH = Path("configs/study.toml")
 DEFAULT_RAW_DIR = Path("data") / "raw"
 DEFAULT_INTERIM_DIR = Path("data") / "interim"
+DEFAULT_REPORT_DIR = Path("data") / "reports"
 
 # Код возврата для команд-заглушек, ещё не реализованных в текущем этапе.
 _EXIT_NOT_IMPLEMENTED = 2
@@ -192,6 +195,47 @@ def _cmd_key_rate(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_audit(arguments: argparse.Namespace) -> int:
+    """Диагностика качества дневных цен и корпоративные события."""
+    from equity_factor_study.pipelines.audit import (
+        load_corporate_events,
+        run_audit,
+        write_events,
+        write_findings,
+        write_summary,
+    )
+
+    prices_path = arguments.interim_dir / "daily_prices.csv"
+    if not prices_path.exists():
+        print(f"Не найдена дневная таблица цен: {prices_path.resolve()}", file=sys.stderr)
+        return 1
+
+    prices = _read_prices(prices_path)
+    events = load_corporate_events(arguments.interim_dir / "corporate_actions.csv")
+    result = run_audit(prices, events=events)
+
+    findings_path = write_findings(result.findings, arguments.report_dir / "findings.csv")
+    events_path = write_events(result.events, arguments.report_dir / "corporate_events.csv")
+    summary_path = write_summary(result.summary, arguments.report_dir / "quality_summary.csv")
+
+    print(f"Найдено замечаний: {len(result.findings)}")
+    print(f"Корпоративных событий: {len(result.events)}")
+    if not result.summary.empty:
+        for _, row in result.summary.iterrows():
+            print(f"  {row['type']}: {row['count']}")
+    print(f"Замечания: {findings_path.resolve()}")
+    print(f"События: {events_path.resolve()}")
+    print(f"Сводка: {summary_path.resolve()}")
+    return 0
+
+
+def _read_prices(path: Path) -> pd.DataFrame:
+    """Прочитать нормализованную дневную таблицу цен."""
+    table = pd.read_csv(path)
+    table["trade_date"] = pd.to_datetime(table["trade_date"]).dt.date
+    return table
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Построить парсер аргументов командной строки."""
     parser = argparse.ArgumentParser(
@@ -215,6 +259,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_INTERIM_DIR,
         help=f"Каталог промежуточных таблиц (по умолчанию {DEFAULT_INTERIM_DIR}).",
+    )
+    parser.add_argument(
+        "--report-dir",
+        type=Path,
+        default=DEFAULT_REPORT_DIR,
+        help=f"Каталог диагностических отчётов (по умолчанию {DEFAULT_REPORT_DIR}).",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True, metavar="command")
@@ -259,9 +309,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     audit_parser = subparsers.add_parser(
         "audit",
-        help="Диагностика качества и корпоративные события (заглушка).",
+        help="Диагностика качества и корпоративные события.",
     )
-    audit_parser.set_defaults(handler=_unsupported("audit"))
+    audit_parser.set_defaults(handler=_cmd_audit)
 
     panel_parser = subparsers.add_parser(
         "panel",
