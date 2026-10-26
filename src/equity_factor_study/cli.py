@@ -330,6 +330,15 @@ def _cmd_panel(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_acceptance(arguments: argparse.Namespace) -> int:
+    """Приёмка этапа 8: прогнать проверки и сформировать отчёт."""
+    from equity_factor_study.checks.acceptance import write_report
+
+    report_path = write_report(arguments.report_dir)
+    print(f"Отчёт приёмки: {report_path.resolve()}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Построить парсер аргументов командной строки."""
     parser = argparse.ArgumentParser(
@@ -418,6 +427,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Построение месячной панели и манифеста.",
     )
     panel_parser.set_defaults(handler=_cmd_panel)
+
+    acceptance_parser = subparsers.add_parser(
+        "acceptance",
+        help="Приёмка этапа 8: детерминизм и отсутствие утечки.",
+    )
+    acceptance_parser.add_argument(
+        "--report-dir",
+        type=Path,
+        default=Path("data/reports"),
+        help="Каталог для отчёта приёмки (по умолчанию data/reports).",
+    )
+    acceptance_parser.set_defaults(handler=_cmd_acceptance)
 
     return parser
 

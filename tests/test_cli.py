@@ -51,7 +51,7 @@ def test_help_lists_commands(capsys):
     captured = capsys.readouterr()
     for command in (
         "check-config", "probe", "catalog", "universe", "prices",
-        "key-rate", "audit", "panel",
+        "key-rate", "audit", "panel", "acceptance",
     ):
         assert command in captured.out
 
@@ -296,3 +296,13 @@ def test_panel_command_missing_prices_returns_one(tmp_path, capsys):
 
     code = main(["--config", str(tmp_config), "--interim-dir", str(tmp_path), "panel"])
     assert code == 1
+
+def test_acceptance_command_writes_report(tmp_path, capsys):
+    """acceptance проганяет проверки и пишет отчёт приёмки."""
+    report_dir = tmp_path / "reports"
+    code = main(["acceptance", "--report-dir", str(report_dir)])
+    assert code == 0
+    assert (report_dir / "acceptance_report.md").exists()
+    assert (report_dir / "acceptance_report.json").exists()
+    captured = capsys.readouterr()
+    assert "Отчёт приёмки" in captured.out
