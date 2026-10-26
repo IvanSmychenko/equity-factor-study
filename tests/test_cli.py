@@ -64,7 +64,7 @@ def test_check_config_exit_zero(capsys):
     assert "2018-06-01" in captured.out  # первый целевой месяц
 
 
-@pytest.mark.parametrize("command", ["probe", "panel"])
+@pytest.mark.parametrize("command", ["probe"])
 def test_stub_commands_return_not_implemented(command, capsys):
     """Команды-заглушки выводят сообщение и возвращают код 2."""
     code = main([command])
@@ -261,4 +261,38 @@ def test_audit_command_missing_prices_returns_one(tmp_path, capsys):
     tmp_config.write_text(DEFAULT_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
 
     code = main(["--config", str(tmp_config), "--interim-dir", str(tmp_path), "audit"])
+    assert code == 1
+
+
+def test_panel_command_writes_panel_and_manifest(tmp_path, capsys):
+    """panel: строит панель и манифест во временный каталог."""
+    tmp_config_dir = tmp_path / "configs"
+    tmp_config_dir.mkdir()
+    tmp_config = tmp_config_dir / "study.toml"
+    tmp_config.write_text(DEFAULT_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+
+    prices = (
+        "secid,trade_date,close,value\n"
+        "A,2014-01-06,100.0,1000.0\n"
+        "A,2014-01-07,101.0,1000.0\n"
+        "A,2014-01-08,102.0,1000.0\n"
+    )
+    (tmp_path / "daily_prices.csv").write_text(prices, encoding="utf-8")
+
+    processed_dir = tmp_path / "processed"
+    code = main(["--config", str(tmp_config), "--interim-dir", str(tmp_path), "--processed-dir", str(processed_dir), "panel"])
+    assert code == 0
+    assert (processed_dir / "monthly_panel.csv").exists()
+    assert (processed_dir / "dataset_manifest.json").exists()
+    assert "Панель" in capsys.readouterr().out
+
+
+def test_panel_command_missing_prices_returns_one(tmp_path, capsys):
+    """panel без дневной таблицы цен завершается кодом 1."""
+    tmp_config_dir = tmp_path / "configs"
+    tmp_config_dir.mkdir()
+    tmp_config = tmp_config_dir / "study.toml"
+    tmp_config.write_text(DEFAULT_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+
+    code = main(["--config", str(tmp_config), "--interim-dir", str(tmp_path), "panel"])
     assert code == 1

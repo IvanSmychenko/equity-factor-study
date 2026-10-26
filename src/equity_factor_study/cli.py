@@ -24,6 +24,7 @@ DEFAULT_CONFIG_PATH = Path("configs/study.toml")
 DEFAULT_RAW_DIR = Path("data") / "raw"
 DEFAULT_INTERIM_DIR = Path("data") / "interim"
 DEFAULT_REPORT_DIR = Path("data") / "reports"
+DEFAULT_PROCESSED_DIR = Path("data") / "processed"
 
 # Код возврата для команд-заглушек, ещё не реализованных в текущем этапе.
 _EXIT_NOT_IMPLEMENTED = 2
@@ -236,6 +237,99 @@ def _read_prices(path: Path) -> pd.DataFrame:
     return table
 
 
+def _read_key_rate(path: Path) -> pd.DataFrame:
+    """Прочитать нормализованный ряд ключевой ставки."""
+    table = pd.read_csv(path)
+    table["date"] = pd.to_datetime(table["date"]).dt.date
+    return table
+
+
+def _sha256(path: Path) -> str:
+    """Вычислить SHA-256 содержимого файла."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        digest.update(file.read())
+    return digest.hexdigest()
+
+
+def _display_path(path: Path) -> str:
+    """Путь относительно рабочего каталога, если возможно, иначе абсолютный."""
+    try:
+        return str(path.relative_to(Path.cwd()))
+    except ValueError:
+        return str(path.resolve())
+
+
+def _cmd_panel(arguments: argparse.Namespace) -> int:
+    """Построить месячную панель и сформировать манифест."""
+    config = _load_config(arguments)
+    from equity_factor_study.pipelines.monthly import (
+        build_manifest,
+        build_monthly_panel,
+    )
+
+    prices_path = arguments.interim_dir / "daily_prices.csv"
+    key_rate_path = arguments.interim_dir / "key_rate.csv"
+    if not prices_path.exists():
+        print(f"Не найдена дневная таблица цен: {prices_path.resolve()}", file=sys.stderr)
+        return 1
+
+    daily = _read_prices(prices_path)
+    secids = sorted(set(daily["secid"]))
+    key_rate = _read_key_rate(key_rate_path) if key_rate_path.exists() else None
+
+    panel = build_monthly_panel(
+        daily,
+        secids=secids,
+        from_month=config.period.observation_start,
+        to_month=config.period.observation_end,
+        max_trading_days=config.month_end.max_trading_days_from_month_end,
+        momentum_window=config.features.momentum_prev_3m,
+        volatility_window=config.features.volatility_3m,
+        key_rate=key_rate,
+    )
+
+    panel_path = arguments.processed_dir / "monthly_panel.csv"
+    panel_path.parent.mkdir(parents=True, exist_ok=True)
+    out = panel.copy()
+    out["month"] = out["month"].map(lambda d: d.isoformat() if hasattr(d, "isoformat") else d)
+    out["price_date"] = out["price_date"].map(lambda d: d.isoformat() if hasattr(d, "isoformat") else d)
+    out.to_csv(panel_path, index=False)
+
+    source_files = [
+        {"path": _display_path(prices_path), "sha256": _sha256(prices_path)},
+    ]
+    if key_rate_path.exists():
+        source_files.append(
+            {"path": _display_path(key_rate_path), "sha256": _sha256(key_rate_path)}
+        )
+
+    manifest = build_manifest(
+        panel=panel,
+        protocol_version=config.protocol.version,
+        observation_start=config.period.observation_start,
+        observation_end=config.period.observation_end,
+        secids=secids,
+        source_files=source_files,
+        code_version="0.1.0",
+        dependencies={},
+    )
+
+    manifest_path = arguments.processed_dir / "dataset_manifest.json"
+    import json
+
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    print(f"Панель: {panel_path.resolve()}, строк: {len(panel)}")
+    print(f"Манифест: {manifest_path.resolve()}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Построить парсер аргументов командной строки."""
     parser = argparse.ArgumentParser(
@@ -265,6 +359,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_REPORT_DIR,
         help=f"Каталог диагностических отчётов (по умолчанию {DEFAULT_REPORT_DIR}).",
+    )
+    parser.add_argument(
+        "--processed-dir",
+        type=Path,
+        default=DEFAULT_PROCESSED_DIR,
+        help=f"Каталог итоговых артефактов (по умолчанию {DEFAULT_PROCESSED_DIR}).",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True, metavar="command")
@@ -315,9 +415,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     panel_parser = subparsers.add_parser(
         "panel",
-        help="Построение месячной панели и манифеста (заглушка).",
+        help="Построение месячной панели и манифеста.",
     )
-    panel_parser.set_defaults(handler=_unsupported("panel"))
+    panel_parser.set_defaults(handler=_cmd_panel)
 
     return parser
 
