@@ -317,6 +317,9 @@ def test_panel_command_writes_panel_and_manifest(tmp_path, capsys):
         "A,2014-01-08,102.0,1000.0\n"
     )
     (tmp_path / "daily_prices.csv").write_text(prices, encoding="utf-8")
+    (tmp_path / "corporate_actions.csv").write_text(
+        "secid,date,event_type\n", encoding="utf-8"
+    )
 
     processed_dir = tmp_path / "processed"
     code = main(["--config", str(tmp_config), "--interim-dir", str(tmp_path), "--processed-dir", str(processed_dir), "panel"])
@@ -335,6 +338,25 @@ def test_panel_command_missing_prices_returns_one(tmp_path, capsys):
 
     code = main(["--config", str(tmp_config), "--interim-dir", str(tmp_path), "panel"])
     assert code == 1
+
+
+def test_panel_command_missing_events_returns_one(tmp_path, capsys):
+    """panel без таблицы корпоративных событий завершается кодом 1 (шаг A1)."""
+    tmp_config_dir = tmp_path / "configs"
+    tmp_config_dir.mkdir()
+    tmp_config = tmp_config_dir / "study.toml"
+    tmp_config.write_text(DEFAULT_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+
+    prices = (
+        "secid,trade_date,close,value\n"
+        "A,2014-01-06,100.0,1000.0\n"
+        "A,2014-01-07,101.0,1000.0\n"
+    )
+    (tmp_path / "daily_prices.csv").write_text(prices, encoding="utf-8")
+
+    code = main(["--config", str(tmp_config), "--interim-dir", str(tmp_path), "panel"])
+    assert code == 1
+
 
 def test_acceptance_command_writes_report(tmp_path, capsys):
     """acceptance проганяет проверки и пишет отчёт приёмки."""

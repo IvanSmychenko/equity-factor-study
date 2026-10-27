@@ -129,6 +129,43 @@ def _monthly_price_series(
     return pd.DataFrame(rows)
 
 
+def adjust_prices_for_splits(
+    daily: pd.DataFrame,
+    *,
+    events: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Привести ряд цен к единому масштабу по корпоративным событиям (шаг A3).
+
+    Для каждого задокументированного сплита/консолидации (``event_type='split'``
+    с ``coef``) значения ``close`` до даты события умножаются на ``coef``:
+    обратный сплит ВТБ 15.07.2024 (цена 0.02 → 92.95, ``coef``≈4663.8)
+    приводит прежний масштаб к новому, устраняя фантомную доходность и
+    неискажая коэффициент OLS. Ряд корректируется **официальным
+    коэффициентом**, а не порогом; исходные данные не изменяются — правка
+    применяется к копии, передаваемой в панель.
+
+    Возвращает копию ``daily`` с приведёнными ценами.
+    """
+    out = daily.copy()
+    if events is None or events.empty:
+        return out
+    if "secid" not in events.columns or "date" not in events.columns:
+        raise MonthlyError("events-таблица должна содержать колонки secid, date")
+
+    splits = events[events.get("event_type", pd.Series(dtype=str)) == "split"].copy()
+    for _, row in splits.iterrows():
+        coef = row.get("coef")
+        if coef is None or pd.isna(coef) or coef <= 0:
+            raise MonthlyError(
+                f"Для сплита {row['secid']} {row['date']} не задан положительный coef"
+            )
+        secid = row["secid"]
+        event_date = pd.Timestamp(row["date"]).date()
+        mask = (out["secid"] == secid) & (out["trade_date"] < event_date)
+        out.loc[mask, "close"] = out.loc[mask, "close"] * float(coef)
+    return out
+
+
 def build_monthly_panel(
     daily: pd.DataFrame,
     *,
@@ -139,6 +176,7 @@ def build_monthly_panel(
     momentum_window: int,
     volatility_window: int,
     key_rate: pd.DataFrame | None = None,
+    events: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Построить месячную панель за период наблюдения.
 
@@ -148,6 +186,9 @@ def build_monthly_panel(
     """
     if "secid" not in daily.columns or "trade_date" not in daily.columns or "close" not in daily.columns:
         raise MonthlyError("daily-таблица должна содержать колонки secid, trade_date, close")
+
+    # Привести цены к единому масштабу по зафиксированным сплитам (шаг A3).
+    daily = adjust_prices_for_splits(daily, events=events)
 
     calendar = sorted(set(daily["trade_date"].dropna()))
     months = [
@@ -255,9 +296,15 @@ def build_manifest(
     source_files: list[dict],
     code_version: str,
     dependencies: dict,
+    adjustments: list[dict] | None = None,
 ) -> dict:
-    """Собрать манифест происхождения панели."""
-    return {
+    """Собрать манифест происхождения панели.
+
+    ``adjustments`` — перечень применённых к ряду корректировок (например,
+    приведение цен к единому масштабу по сплиту/консолидации). Каждая запись:
+    secid, date, event_type, coef, source.
+    """
+    manifest = {
         "protocol_version": protocol_version,
         "observation_start": observation_start.isoformat(),
         "observation_end": observation_end.isoformat(),
@@ -267,6 +314,9 @@ def build_manifest(
         "dependencies": dependencies,
         "rows": len(panel),
     }
+    if adjustments:
+        manifest["adjustments"] = adjustments
+    return manifest
 
 
 def _empty_row(secid: str, month: date) -> dict:

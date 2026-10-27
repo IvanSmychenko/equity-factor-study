@@ -271,6 +271,62 @@ def _cmd_audit(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_collect_events(arguments: argparse.Namespace) -> int:
+    """Зафиксировать корпоративное событие в таблице событий (шаг A2).
+
+    Полуручной сбор события с обязательной фиксацией ``source`` (происхождение)
+    и ``retrieved_at`` (дата получения). Используется, когда машинный маршрут
+    недоступен (сплит/консолидация ВТБ 15.07.2024, коэффициент вычислен по
+    официальной истории цен).
+    """
+    from equity_factor_study.pipelines.audit import (
+        load_corporate_events,
+        record_corporate_event,
+        save_corporate_events,
+    )
+
+    events_path = arguments.interim_dir / "corporate_actions.csv"
+    # Существующие события сохраняем, новую строку добавляем.
+    if events_path.exists():
+        existing = load_corporate_events(events_path)
+        rows = []
+        for record in existing.to_dict("records"):
+            rows.append(
+                {
+                    "secid": record["secid"],
+                    "date": pd.Timestamp(record["date"]).date().isoformat(),
+                    "event_type": record["event_type"],
+                    "coef": record.get("coef"),
+                    "source": record.get("source"),
+                    "retrieved_at": record.get("retrieved_at"),
+                }
+            )
+        new = record_corporate_event(
+            arguments.secid,
+            arguments.event_date,
+            arguments.event_type,
+            coef=arguments.coef,
+            source=arguments.source,
+            retrieved_at=arguments.retrieved_at,
+        )
+        rows.extend(new.to_dict("records"))
+        events = pd.DataFrame(rows)[list(record_corporate_event("", "2000-01-01", "").columns)]
+    else:
+        events = record_corporate_event(
+            arguments.secid,
+            arguments.event_date,
+            arguments.event_type,
+            coef=arguments.coef,
+            source=arguments.source,
+            retrieved_at=arguments.retrieved_at,
+        )
+
+    save_corporate_events(events, events_path)
+    print(f"Зафиксировано событие {arguments.secid} {arguments.event_date} "
+          f"{arguments.event_type} (coef={arguments.coef}) -> {events_path.resolve()}")
+    return 0
+
+
 def _read_prices(path: Path) -> pd.DataFrame:
     """Прочитать нормализованную дневную таблицу цен."""
     table = pd.read_csv(path)
@@ -306,6 +362,7 @@ def _display_path(path: Path) -> str:
 def _cmd_panel(arguments: argparse.Namespace) -> int:
     """Построить месячную панель и сформировать манифест."""
     config = _load_config(arguments)
+    from equity_factor_study.pipelines.audit import load_corporate_events
     from equity_factor_study.pipelines.monthly import (
         build_manifest,
         build_monthly_panel,
@@ -321,6 +378,17 @@ def _cmd_panel(arguments: argparse.Namespace) -> int:
     secids = sorted(set(daily["secid"]))
     key_rate = _read_key_rate(key_rate_path) if key_rate_path.exists() else None
 
+    # Корпоративные события (обязательный вход при сборке панели, шаг A1):
+    # приводят ряд к единому масштабу и участвуют в приёмке.
+    events_path = arguments.interim_dir / "corporate_actions.csv"
+    if not events_path.exists():
+        print(
+            f"Не найдена таблица корпоративных событий: {events_path.resolve()}",
+            file=sys.stderr,
+        )
+        return 1
+    events = load_corporate_events(events_path)
+
     panel = build_monthly_panel(
         daily,
         secids=secids,
@@ -330,6 +398,7 @@ def _cmd_panel(arguments: argparse.Namespace) -> int:
         momentum_window=config.features.momentum_prev_3m,
         volatility_window=config.features.volatility_3m,
         key_rate=key_rate,
+        events=events,
     )
 
     panel_path = arguments.processed_dir / "monthly_panel.csv"
@@ -347,6 +416,21 @@ def _cmd_panel(arguments: argparse.Namespace) -> int:
             {"path": _display_path(key_rate_path), "sha256": _sha256(key_rate_path)}
         )
 
+    # Запись о применённых корректировках сплита в манифест (шаг A4).
+    adjustments = []
+    if not events.empty and "event_type" in events.columns:
+        for _, row in events.iterrows():
+            if row.get("event_type") == "split" and not pd.isna(row.get("coef")):
+                adjustments.append(
+                    {
+                        "secid": row["secid"],
+                        "date": pd.Timestamp(row["date"]).date().isoformat(),
+                        "event_type": "split",
+                        "coef": row["coef"],
+                        "source": row.get("source"),
+                    }
+                )
+
     manifest = build_manifest(
         panel=panel,
         protocol_version=config.protocol.version,
@@ -356,6 +440,7 @@ def _cmd_panel(arguments: argparse.Namespace) -> int:
         source_files=source_files,
         code_version="0.1.0",
         dependencies={},
+        adjustments=adjustments or None,
     )
 
     manifest_path = arguments.processed_dir / "dataset_manifest.json"
@@ -558,6 +643,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Диагностика качества и корпоративные события.",
     )
     audit_parser.set_defaults(handler=_cmd_audit)
+
+    collect_parser = subparsers.add_parser(
+        "collect-events",
+        help="Зафиксировать корпоративное событие (полуручной сбор, шаг A2).",
+    )
+    collect_parser.add_argument("--secid", required=True, help="Код инструмента.")
+    collect_parser.add_argument("--event-date", required=True, help="Дата события (ISO).")
+    collect_parser.add_argument(
+        "--event-type",
+        required=True,
+        choices=["split"],
+        help="Тип события.",
+    )
+    collect_parser.add_argument("--coef", type=float, help="Коэффициент приведения.")
+    collect_parser.add_argument("--source", help="Происхождение сведения.")
+    collect_parser.add_argument("--retrieved-at", help="Дата получения (ISO).")
+    collect_parser.set_defaults(handler=_cmd_collect_events)
 
     panel_parser = subparsers.add_parser(
         "panel",

@@ -29,7 +29,10 @@ from equity_factor_study.validation import (
 )
 
 # Колонки таблицы корпоративных событий (артефакт-вход).
-EVENT_COLUMNS = ["secid", "date", "event_type"]
+# Secid + date + event_type — идентификация события; coef — коэффициент
+# приведения (для сплита/консолидации); source и retrieved_at — происхождение
+# (шаг A2: источник и дата получения).
+EVENT_COLUMNS = ["secid", "date", "event_type", "coef", "source", "retrieved_at"]
 
 # Типы корпоративных событий.
 EVENT_SPLIT = "split"
@@ -59,17 +62,67 @@ def load_corporate_events(path: Path) -> pd.DataFrame:
     «событий нет»: пустая таблица допустима только при существующем файле,
     если в нём действительно нет событий. Молчаливый пропуск обязательного
     входа запрещён (шаг A1).
+
+    Обязательны колонки ``secid``, ``date``, ``event_type``. ``coef``,
+    ``source``, ``retrieved_at`` используются как дополняющие сведения
+    (заполняются при наличии).
     """
     if not path.exists():
         raise AuditError(f"Файл корпоративных событий не найден: {path.resolve()}")
     events = pd.read_csv(path)
     if events.empty:
         return pd.DataFrame(columns=EVENT_COLUMNS)
-    for column in EVENT_COLUMNS:
+    required = ["secid", "date", "event_type"]
+    for column in required:
         if column not in events.columns:
             raise AuditError(f"В таблице событий нет колонки {column!r}")
     events["date"] = events["date"].map(_as_date)
+    # Дополняющие колонки — при отсутствии заполнить пустыми значениями.
+    for column in EVENT_COLUMNS:
+        if column not in events.columns:
+            events[column] = None
     return events[EVENT_COLUMNS]
+
+
+def record_corporate_event(
+    secid: str,
+    date: str,
+    event_type: str,
+    *,
+    coef: float | None = None,
+    source: str = "",
+    retrieved_at: str = "",
+) -> pd.DataFrame:
+    """Сформировать строку корпоративного события (полуручной сбор, шаг A2).
+
+    ``source`` — происхождение (например, ``computed_from_moex_history``
+    для сплита ВТБ 15.07.2024); ``retrieved_at`` — дата получения в формате
+    ISO. Возвращает DataFrame с одной строкой в формате ``EVENT_COLUMNS``.
+    """
+    return pd.DataFrame(
+        [
+            {
+                "secid": secid,
+                "date": pd.Timestamp(date).date().isoformat(),
+                "event_type": event_type,
+                "coef": coef,
+                "source": source,
+                "retrieved_at": retrieved_at,
+            }
+        ]
+    )
+
+
+def save_corporate_events(events: pd.DataFrame, path: Path) -> Path:
+    """Сохранить таблицу корпоративных событий в CSV."""
+    if events.empty:
+        events = pd.DataFrame(columns=EVENT_COLUMNS)
+    out = events.copy()
+    if "date" in out.columns:
+        out["date"] = out["date"].map(lambda d: pd.Timestamp(d).date().isoformat())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out.to_csv(path, index=False)
+    return path
 
 
 def build_events_index(events: pd.DataFrame) -> set[tuple[str, str]]:

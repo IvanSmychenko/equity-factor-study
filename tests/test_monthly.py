@@ -8,6 +8,7 @@ import pytest
 from equity_factor_study.pipelines.monthly import (
     PANEL_COLUMNS,
     MonthlyError,
+    adjust_prices_for_splits,
     build_manifest,
     build_monthly_panel,
 )
@@ -245,3 +246,91 @@ def test_build_manifest():
     assert manifest["instruments"] == ["A"]
     assert manifest["source_files"][0]["sha256"] == "abc"
     assert manifest["rows"] == 1
+
+
+def test_adjust_prices_for_splits_no_events_returns_copy():
+    """Без событий панель строится по исходным ценам (копия данных)."""
+    daily = pd.DataFrame(
+        [
+            {"secid": "A", "trade_date": date(2024, 7, 10), "close": 0.02, "value": 1.0},
+            {"secid": "A", "trade_date": date(2024, 7, 15), "close": 92.95, "value": 1.0},
+        ]
+    )
+    out = adjust_prices_for_splits(daily)
+    assert list(out["close"]) == [0.02, 92.95]
+    # исходник не изменён
+    assert list(daily["close"]) == [0.02, 92.95]
+
+
+def test_adjust_prices_for_splits_reverse_split():
+    """Обратный сплит приводит старую цену к новому масштабу."""
+    daily = pd.DataFrame(
+        [
+            {"secid": "VTBR", "trade_date": date(2024, 7, 10), "close": 0.02, "value": 1.0},
+            {"secid": "VTBR", "trade_date": date(2024, 7, 15), "close": 92.95, "value": 1.0},
+            {"secid": "OTHER", "trade_date": date(2024, 7, 15), "close": 50.0, "value": 1.0},
+        ]
+    )
+    events = pd.DataFrame(
+        [
+            {
+                "secid": "VTBR",
+                "date": pd.Timestamp("2024-07-15"),
+                "event_type": "split",
+                "coef": 4663.8,
+            }
+        ]
+    )
+    out = adjust_prices_for_splits(daily, events=events)
+    # Цена до сплита приведена к новому масштабу: 0.02 * 4663.8 ≈ 93.28
+    assert abs(out.loc[0, "close"] - 0.02 * 4663.8) < 1e-6
+    # Цена после сплита не изменена
+    assert out.loc[1, "close"] == 92.95
+    # Другой инструмент не затронут
+    assert out.loc[2, "close"] == 50.0
+
+
+def test_adjust_prices_for_splits_removes_phantom_return():
+    """После корректировки фантомная доходность исчезает."""
+    daily = pd.DataFrame(
+        [
+            {"secid": "VTBR", "trade_date": date(2024, 7, 10), "close": 0.02, "value": 1.0},
+            {"secid": "VTBR", "trade_date": date(2024, 7, 15), "close": 92.95, "value": 1.0},
+        ]
+    )
+    events = pd.DataFrame(
+        [
+            {
+                "secid": "VTBR",
+                "date": pd.Timestamp("2024-07-15"),
+                "event_type": "split",
+                "coef": 4663.8,
+            }
+        ]
+    )
+    daily_adj = adjust_prices_for_splits(daily, events=events)
+    ret = daily_adj.sort_values("trade_date")["close"].pct_change(fill_method=None).iloc[-1]
+    # Доходность на дату сплита должна быть близка к 0 (нет фантомного скачка)
+    assert ret is not None and abs(ret) < 0.05
+
+
+def test_adjust_prices_for_splits_requires_positive_coef():
+    """Сплит без положительного коэффициента — ошибка."""
+    with pytest.raises(MonthlyError, match="положительный coef"):
+        adjust_prices_for_splits(
+            pd.DataFrame(
+                [
+                    {"secid": "A", "trade_date": date(2024, 7, 15), "close": 1.0, "value": 1.0},
+                ]
+            ),
+            events=pd.DataFrame(
+                [
+                    {
+                        "secid": "A",
+                        "date": pd.Timestamp("2024-07-15"),
+                        "event_type": "split",
+                        "coef": None,
+                    }
+                ]
+            ),
+        )
