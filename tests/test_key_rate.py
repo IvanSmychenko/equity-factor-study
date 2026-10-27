@@ -74,6 +74,24 @@ def test_summarize_key_rate_complete():
     assert summary.complete is True
 
 
+def test_summarize_key_rate_holidays_not_gaps():
+    """Праздники и переносы РФ не считаются разрывами покрытия.
+
+    Период с 2014-01-01 по 2014-01-10: новогодние каникулы (1–8 янв) —
+    нерабочие; рабочие будни — только 9 и 10 января. Наблюдения есть
+    на 9 и 10 -> разрывов нет.
+    """
+    table = pd.DataFrame(
+        {
+            "date": [date(2014, 1, 9), date(2014, 1, 10)],
+            "rate": [5.5, 5.5],
+        }
+    )
+    summary = summarize_key_rate(table, date(2014, 1, 1), date(2014, 1, 10))
+    assert summary.gaps == 0
+    assert summary.complete is True
+
+
 @responses.activate
 def test_collect_key_rate_end_to_end(tmp_path):
     responses.post(CBR_ENDPOINT, body=_cbr_payload(), status=200, content_type="text/xml")
