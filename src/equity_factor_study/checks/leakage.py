@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 
@@ -603,7 +603,7 @@ def tl_9_control_dates(config=None, *, max_trading_days=5, momentum_window=3,
         # Последний торговый день месяца в пределах допуска 5.
         next_month = _shift_months(month, 1)
         month_end = next_month - pd.offsets.MonthBegin(1)
-        trade_date = month_end.normalize().to_pydatetime().date() - pd.Timedelta(days=2)
+        trade_date = month_end.normalize().to_pydatetime().date() - timedelta(days=2)
         price = price * (1.0 + 0.01 * (1 if month.month % 2 else -1))
         daily_rows.append({"secid": "A", "trade_date": trade_date, "close": round(price, 4), "value": 1.0})
     daily = pd.DataFrame(daily_rows)

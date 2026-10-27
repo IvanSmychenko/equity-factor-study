@@ -129,10 +129,6 @@ def _monthly_price_series(
     return pd.DataFrame(rows)
 
 
-def _daily_returns(close_series: pd.Series) -> pd.Series:
-    return close_series.pct_change()
-
-
 def build_monthly_panel(
     daily: pd.DataFrame,
     *,
@@ -179,7 +175,7 @@ def build_monthly_panel(
 
         # Дневные доходности для волатильности.
         per_sec = per_sec.sort_values("trade_date")
-        daily_ret = per_sec.set_index("trade_date")["close"].pct_change()
+        daily_ret = per_sec.set_index("trade_date")["close"].pct_change(fill_method=None)
 
         # Сдвиг целевой переменной: return_next_1m[month] = price[month+1]/price[month]-1.
         price_by_month = monthly[["month", "month_end_price"]].copy()
