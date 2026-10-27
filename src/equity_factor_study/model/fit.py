@@ -114,6 +114,7 @@ def walk_forward(
     refit_frequency: str,
     first_target_month: date,
     last_month: date,
+    per_security: bool = False,
 ) -> list[Forecast]:
     """Скользящее переобучение и прогноз по каждому целевому месяцу.
 
@@ -122,6 +123,12 @@ def walk_forward(
     [t−W, t−1] при t+1 = m). При ``refit_frequency = "monthly"`` модель
     переобучается в каждом целевом месяце; поддерживается только
     ежемесячное переобучение (остальные значения не реализованы).
+
+    При ``per_security=True`` окно формируется **отдельно по каждой акции**:
+    прогноз для акции i строится регрессией, обученной только на её
+    собственных наблюдениях (как требует методика модели B/C и значение
+    конфигурации ``model.per_security``). По умолчанию ``False`` — единая
+    (pooled) регрессия на всех акциях, что использовалось ранее.
     """
     if refit_frequency != "monthly":
         raise FitError(
@@ -132,6 +139,17 @@ def walk_forward(
     frame = frame.copy()
     frame["month"] = pd.to_datetime(frame["month"])
     forecasts: list[Forecast] = []
+
+    if per_security:
+        if "secid" not in frame.columns:
+            raise FitError("per_security требует колонку 'secid' в таблице наблюдений")
+        return _walk_forward_per_security(
+            frame,
+            feature_columns=feature_columns,
+            training_window_months=training_window_months,
+            first_target_month=first_target_month,
+            last_month=last_month,
+        )
 
     target_months = sorted(set(frame["month"]))
     for m in target_months:
@@ -166,6 +184,60 @@ def walk_forward(
             )
         )
 
+    return forecasts
+
+
+def _walk_forward_per_security(
+    frame: pd.DataFrame,
+    *,
+    feature_columns: list[str],
+    training_window_months: int,
+    first_target_month: date,
+    last_month: date,
+) -> list[Forecast]:
+    """Скользящий прогноз с отдельной регрессией по каждой акции.
+
+    Для каждой акции строится своя обучающая выборка (только её наблюдения),
+    по которой в каждом целевом месяце переобучается OLS. Это соответствует
+    методике моделей B/C («регрессия по каждой акции отдельно»). Прогнозы
+    агрегируются по целевым месяцам; каждая серия прогноза относится к одной
+    акции. Маска наблюдений (окно) формируется по датам, как в pooled-версии,
+    но внутри каждой группы по ``secid``.
+    """
+    forecasts: list[Forecast] = []
+    for secid, group in frame.groupby("secid"):
+        group = group.sort_values("month").reset_index(drop=True)
+        target_months = sorted(set(group["month"]))
+        for m in target_months:
+            if m < pd.Timestamp(first_target_month):
+                continue
+            if m > pd.Timestamp(last_month):
+                break
+
+            window_start = _shift_month(m, -(training_window_months + 1))
+            window_end = _shift_month(m, -1)
+            window = group[
+                (group["month"] >= window_start) & (group["month"] <= window_end)
+            ]
+            if len(window) < 2:
+                continue
+
+            fitted = fit_ols(window, feature_columns=feature_columns)
+            current = group[group["month"] == m]
+            if current.empty:
+                continue
+            predicted = pd.Series(
+                fitted.predict(current[feature_columns]),
+                index=current.index,
+            )
+            forecasts.append(
+                Forecast(
+                    forecast_month=m.date(),
+                    predicted=predicted,
+                    actual=current[TARGET_COLUMN].astype(float).reset_index(drop=True),
+                    train_rows=fitted.train_rows,
+                )
+            )
     return forecasts
 
 

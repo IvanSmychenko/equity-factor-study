@@ -157,6 +157,111 @@ def test_walk_forward_unsupported_frequency(observation_matrix):
         )
 
 
+def test_walk_forward_per_security_groups_by_secid(observation_matrix):
+    """per_security обучает отдельную регрессию по каждой акции; окно не
+    смешивает наблюдения разных инструментов."""
+    frame = _frame(observation_matrix)
+    forecasts = walk_forward(
+        frame,
+        feature_columns=FEATURE_COLUMNS,
+        training_window_months=48,
+        refit_frequency="monthly",
+        first_target_month=FIRST_TARGET,
+        last_month=EVAL_END,
+        per_security=True,
+    )
+    assert forecasts
+    assert forecasts[0].forecast_month == FIRST_TARGET
+    # Каждый прогноз — по одной акции (период оценки: 2 акции * 69 мес.).
+    assert all(len(f.predicted) == 1 for f in forecasts)
+
+
+def test_walk_forward_per_security_requires_secid(observation_matrix):
+    frame = _frame(observation_matrix).drop(columns=["secid"])
+    with pytest.raises(FitError, match="secid"):
+        walk_forward(
+            frame,
+            feature_columns=FEATURE_COLUMNS,
+            training_window_months=48,
+            refit_frequency="monthly",
+            first_target_month=FIRST_TARGET,
+            last_month=EVAL_END,
+            per_security=True,
+        )
+
+
+def test_build_compositions_eight_groups():
+    """Из трёх групп образуются восемь составов (включая пустой)."""
+    from equity_factor_study.model.selection import build_compositions
+
+    comps = build_compositions()
+    assert len(comps) == 8
+    # Полный набор — 5 признаков; пустой — 0.
+    sizes = sorted(c.size for c in comps)
+    assert sizes == [0, 1, 2, 2, 3, 3, 4, 5]
+    # Полный набор содержит все пять признаков.
+    full = max(comps, key=lambda c: c.size)
+    assert set(full.features) == set(FEATURE_COLUMNS)
+
+
+def test_rebalance_first_date_after_warmup():
+    """Первый пересмотр после накопления 12 ошибок — 1 июля 2019 (пункт Б.4)."""
+    from equity_factor_study.model.selection import rebalance_dates
+
+    dates = rebalance_dates(
+        first_error_month=date(2018, 6, 1),
+        evaluation_target_start=date(2021, 1, 1),
+        last_month=date(2026, 9, 1),
+        window_months=12,
+    )
+    assert dates[0] == date(2019, 7, 1)
+    # Квартальная сетка.
+    assert all(d.month in (1, 4, 7, 10) for d in dates)
+
+
+def test_select_composition_prefers_fewer_on_tie():
+    """При равенстве ошибок выбирается более простой состав (меньше признаков)."""
+    from equity_factor_study.model.selection import (
+        build_compositions,
+        select_composition,
+    )
+
+    comps = build_compositions()
+    simple = next(c for c in comps if c.size == 1)
+    rich = next(c for c in comps if c.size == 5)
+    idx = pd.to_datetime(["2020-01-01", "2020-02-01", "2020-03-01", "2020-04-01"])
+    mse = {}
+    for comp, val in [(simple, 0.01), (rich, 0.01)]:
+        mse[comp] = pd.Series([val] * 4, index=idx)
+    chosen = select_composition(mse, rebalance_date=date(2020, 5, 1), window_months=4)
+    assert chosen.size == 1
+
+
+def test_run_selection_evaluation_compares_models():
+    """Оркестратор отбора строит модели A/B/C и сравнивает точность."""
+    from equity_factor_study.model.selection import run_selection_evaluation
+
+    panel = build_long_continuous_panel(start=date(2014, 1, 1), end=date(2026, 9, 1))
+    mat = build_observation_matrix(panel)
+    frame = mat.features.copy()
+    frame["target_return_next_1m"] = mat.target.to_numpy()
+    frame["month"] = mat.identity["month"].to_numpy()
+    frame["secid"] = mat.identity["secid"].to_numpy()
+
+    report = run_selection_evaluation(
+        frame,
+        training_window_months=48,
+        first_target_month=FIRST_TARGET,
+        evaluation_target_start=date(2021, 1, 1),
+        last_month=EVAL_END,
+    )
+    assert report.model_a.forecast_count > 0
+    assert report.model_b.forecast_count == report.model_c.forecast_count
+    # Разность C−B — конечное число.
+    assert np.isfinite(report.comparison_ba)
+    assert not report.rebalance_history.empty
+
+
 def test_evaluate_forecasts_securities_then_months(observation_matrix):
     frame = _frame(observation_matrix)
     forecasts = walk_forward(
