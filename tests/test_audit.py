@@ -22,8 +22,17 @@ def _prices(rows: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["secid", "trade_date", "close", "value"])
 
 
-def test_load_corporate_events_missing_returns_empty(tmp_path):
-    events = load_corporate_events(tmp_path / "corporate_actions.csv")
+def test_load_corporate_events_missing_raises(tmp_path):
+    """Отсутствие файла событий — ошибка (источник отсутствует), а не «событий нет»."""
+    with pytest.raises(AuditError, match="не найден"):
+        load_corporate_events(tmp_path / "corporate_actions.csv")
+
+
+def test_load_corporate_events_empty_file_ok(tmp_path):
+    """Существующий, но пустой файл (событий нет) — допустимое состояние."""
+    path = tmp_path / "corporate_actions.csv"
+    path.write_text("secid,date,event_type\n", encoding="utf-8")
+    events = load_corporate_events(path)
     assert events.empty
     assert list(events.columns) == EVENT_COLUMNS
 

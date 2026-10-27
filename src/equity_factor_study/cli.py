@@ -243,7 +243,17 @@ def _cmd_audit(arguments: argparse.Namespace) -> int:
         return 1
 
     prices = _read_prices(prices_path)
-    events = load_corporate_events(arguments.interim_dir / "corporate_actions.csv")
+
+    # Корпоративные события — обязательный вход диагностики (шаг A1):
+    # отсутствие файла не должно трактоваться как «событий нет».
+    events_path_in = arguments.interim_dir / "corporate_actions.csv"
+    if not events_path_in.exists():
+        print(
+            f"Не найдена таблица корпоративных событий: {events_path_in.resolve()}",
+            file=sys.stderr,
+        )
+        return 1
+    events = load_corporate_events(events_path_in)
     result = run_audit(prices, events=events)
 
     findings_path = write_findings(result.findings, arguments.report_dir / "findings.csv")
@@ -365,7 +375,17 @@ def _cmd_acceptance(arguments: argparse.Namespace) -> int:
     """Приёмка этапа 8: прогнать проверки и сформировать отчёт."""
     from equity_factor_study.checks.acceptance import write_report
 
-    report_path = write_report(arguments.report_dir)
+    config_dir = arguments.config.resolve().parent
+    # Обязательные входы пайплайна: отсутствие любого делает приёмку возможной
+    # только при выявлении расхождения (шаг A1), а не молчаливым пропуском.
+    input_paths = [
+        ("замок состава", config_dir / "universe.lock.toml"),
+        ("дневные цены", arguments.interim_dir / "daily_prices.csv"),
+        ("ключевая ставка", arguments.interim_dir / "key_rate.csv"),
+        ("корпоративные события", arguments.interim_dir / "corporate_actions.csv"),
+        ("месячная панель", arguments.processed_dir / "monthly_panel.csv"),
+    ]
+    report_path = write_report(arguments.report_dir, input_paths=input_paths)
     print(f"Отчёт приёмки: {report_path.resolve()}")
     return 0
 

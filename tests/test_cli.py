@@ -263,6 +263,8 @@ def test_audit_command_writes_reports(tmp_path, capsys):
         "A,2014-01-08,100.0,130.0\n"
     )
     (tmp_path / "daily_prices.csv").write_text(prices, encoding="utf-8")
+    # Корпоративные события — обязательный вход (шаг A1): создаём пустую таблицу.
+    (tmp_path / "corporate_actions.csv").write_text("secid,date,event_type\n", encoding="utf-8")
 
     report_dir = tmp_path / "reports"
     code = main(["--config", str(tmp_config), "--interim-dir", str(tmp_path), "--report-dir", str(report_dir), "audit"])
@@ -279,6 +281,23 @@ def test_audit_command_missing_prices_returns_one(tmp_path, capsys):
     tmp_config_dir.mkdir()
     tmp_config = tmp_config_dir / "study.toml"
     tmp_config.write_text(DEFAULT_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+
+    code = main(["--config", str(tmp_config), "--interim-dir", str(tmp_path), "audit"])
+    assert code == 1
+
+
+def test_audit_command_missing_events_returns_one(tmp_path, capsys):
+    """audit с ценами, но без таблицы событий, завершается кодом 1 (шаг A1)."""
+    tmp_config_dir = tmp_path / "configs"
+    tmp_config_dir.mkdir()
+    tmp_config = tmp_config_dir / "study.toml"
+    tmp_config.write_text(DEFAULT_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+
+    prices = (
+        "secid,trade_date,close,value\n"
+        "A,2014-01-06,10.0,100.0\n"
+    )
+    (tmp_path / "daily_prices.csv").write_text(prices, encoding="utf-8")
 
     code = main(["--config", str(tmp_config), "--interim-dir", str(tmp_path), "audit"])
     assert code == 1

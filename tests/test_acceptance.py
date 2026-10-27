@@ -40,3 +40,31 @@ def test_write_report_creates_md_and_json(tmp_path):
     content = md.read_text(encoding="utf-8")
     assert "Всего проверок" in content
     assert "[PASS]" in content
+
+
+def test_check_required_inputs(tmp_path):
+    """Проверка обязательных входов: недостающий вход фиксируется как расхождение."""
+    from equity_factor_study.checks.acceptance import check_required_inputs
+
+    present = tmp_path / "daily_prices.csv"
+    present.write_text("x\n", encoding="utf-8")
+    missing = tmp_path / "corporate_actions.csv"
+
+    results = check_required_inputs(
+        [("цены", present), ("события", missing)]
+    )
+    assert len(results) == 2
+    by_desc = {r["description"]: r for r in results}
+    assert by_desc["обязательный вход цены"]["passed"] is True
+    assert by_desc["обязательный вход события"]["passed"] is False
+
+
+def test_write_report_fails_on_missing_input(tmp_path):
+    """Приёмка не принимается, если обязательный вход отсутствует (шаг A1)."""
+    md = write_report(
+        tmp_path,
+        input_paths=[("события", tmp_path / "corporate_actions.csv")],
+    )
+    content = md.read_text(encoding="utf-8")
+    assert "[FAIL]" in content
+    assert "не принято" in content

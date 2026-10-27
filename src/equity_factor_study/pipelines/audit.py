@@ -53,10 +53,18 @@ def _as_date(value) -> date:
 
 
 def load_corporate_events(path: Path) -> pd.DataFrame:
-    """Загрузить таблицу корпоративных событий из CSV."""
+    """Загрузить таблицу корпоративных событий из CSV.
+
+    Отсутствие файла — это ошибка (источник событий не собран), а не
+    «событий нет»: пустая таблица допустима только при существующем файле,
+    если в нём действительно нет событий. Молчаливый пропуск обязательного
+    входа запрещён (шаг A1).
+    """
     if not path.exists():
-        return pd.DataFrame(columns=EVENT_COLUMNS)
+        raise AuditError(f"Файл корпоративных событий не найден: {path.resolve()}")
     events = pd.read_csv(path)
+    if events.empty:
+        return pd.DataFrame(columns=EVENT_COLUMNS)
     for column in EVENT_COLUMNS:
         if column not in events.columns:
             raise AuditError(f"В таблице событий нет колонки {column!r}")

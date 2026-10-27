@@ -32,7 +32,29 @@ def _to_month() -> date:
     return date(year, month_index + 1, 1)
 
 
-def run_all_checks() -> dict:
+def check_required_inputs(paths: list[tuple[str, Path]]) -> list[dict]:
+    """Проверить наличие обязательных входных файлов (шаг A1).
+
+    ``paths`` — список пар (имя входа, путь). Каждый вход обязан существовать;
+    иначе пайплайн не может быть принят (например, отсутствие таблицы
+    корпоративных действий не должно трактоваться как «событий нет»).
+    """
+    results: list[dict] = []
+    for name, path in paths:
+        exists = path.exists()
+        results.append(
+            {
+                "id": "A.REQ",
+                "description": f"обязательный вход {name}",
+                "rows_compared": 1,
+                "passed": exists,
+                "detail": "" if exists else f"отсутствует: {path.resolve()}",
+            }
+        )
+    return results
+
+
+def run_all_checks(input_paths: list[tuple[str, Path]] | None = None) -> dict:
     """Прогнать все проверки детерминизма, утечки и дефектов А.6."""
     from equity_factor_study.checks import determinism as d
     from equity_factor_study.checks import leakage as lk
@@ -44,6 +66,10 @@ def run_all_checks() -> dict:
     to_month = _to_month()
 
     results: list[dict] = []
+
+    # --- обязательные входы (шаг A1): отсутствие входа = приёмка невозможна ---
+    if input_paths:
+        results.extend(check_required_inputs(input_paths))
 
     # --- детерминизм (TD-1..TD-7) ---
     for fn in (
@@ -124,12 +150,12 @@ def _control_dates() -> dict:
     }
 
 
-def write_report(report_dir: Path) -> Path:
+def write_report(report_dir: Path, *, input_paths: list[tuple[str, Path]] | None = None) -> Path:
     """Сформировать отчёт приёмки и записать его в ``report_dir``."""
     report_dir = Path(report_dir)
     report_dir.mkdir(parents=True, exist_ok=True)
 
-    summary = run_all_checks()
+    summary = run_all_checks(input_paths=input_paths)
     results = summary["results"]
     all_ok = all(r["passed"] for r in results)
 
@@ -169,10 +195,10 @@ def write_report(report_dir: Path) -> Path:
     return report_path
 
 
-def print_report(report_dir: Path) -> int:
+def print_report(report_dir: Path, *, input_paths: list[tuple[str, Path]] | None = None) -> int:
     """Вывести отчёт в консоль и вернуть код результата (0 — принято)."""
     report_dir = Path(report_dir)
-    summary = run_all_checks()
+    summary = run_all_checks(input_paths=input_paths)
     results = summary["results"]
     for result in results:
         mark = "PASS" if result["passed"] else "FAIL"
