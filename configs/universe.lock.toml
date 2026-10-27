@@ -1,0 +1,55 @@
+# Замок состава исторической совокупности.
+# Формируется этапом 4; изменение вручную не допускается.
+# config_hash = "79aaf60559c6fa781966c88430f1e40488da535ec3704ef3e993f005750a3aac"
+
+[universe]
+version = "0.1"
+selection_board = "TQBR"
+selection_year = 2014
+formation_date = "2026-10-27"
+secids = ["SBER", "GAZP", "LKOH", "VTBR", "MGNT", "GMKN", "MTSS", "NVTK", "ROSN", "TATN"]
+exclusions_file = "universe_exclusions.csv"
+
+[[instruments]]
+secid = "SBER"
+turnover = 2678497254724.2
+
+[[instruments]]
+secid = "GAZP"
+turnover = 813300290027.3
+
+[[instruments]]
+secid = "LKOH"
+turnover = 682572402465.3999
+
+[[instruments]]
+secid = "VTBR"
+turnover = 564264338180.4
+
+[[instruments]]
+secid = "MGNT"
+turnover = 446359310764.4
+
+[[instruments]]
+secid = "GMKN"
+turnover = 297383177385.0
+
+[[instruments]]
+secid = "MTSS"
+turnover = 207189148959.4
+
+[[instruments]]
+secid = "NVTK"
+turnover = 195153506769.90002
+
+[[instruments]]
+secid = "ROSN"
+turnover = 174960173492.1
+
+[[instruments]]
+secid = "TATN"
+turnover = 111779241482.29999
+
+[exclusions]
+reason = "not_selected_low_turnover"
+secids = ["CHMF", "SNGS", "MOEX", "HYDR", "AFLT", "RTKM", "ALRS", "IRAO", "AFKS", "NLMK", "RGSS", "MAGN", "MTLR", "FEES", "BANE", "PIKK", "MSRS", "RASP", "MVID", "PHOR", "SIBN", "PLZL", "AKRN", "MSNG", "TRMK", "LSRG", "TGKA", "OGKB", "MRKC", "MSTT", "SVAV", "UTAR", "VSMO", "MRKP", "KMAZ", "GCHE", "APTK", "MRKV", "BSPB", "BLNG", "RBCM", "NMTP", "AMEZ", "MFGS", "UNAC", "IRKT", "KZOS", "CHMK", "SELG", "DVEC", "JNOS", "FESH", "LSNG", "KOGK", "MRKZ", "ABRD", "TGKB", "MRKY", "ROST", "NKNC", "LVHK", "MRKU", "WTCM", "MRKK", "KAZT", "KBSB", "VJGZ", "GAZA", "RKKE", "MRKS", "KGKC", "LIFE", "TGKN", "TTLK", "UKUZ", "MGNZ", "ROLO", "USBN", "UNKL", "URKZ", "RDRB", "SAGO", "NNSB", "MAGE", "YKEN", "DIOD", "MGTS", "ASSB", "VRSB", "BRZL", "KRKN", "KROT", "ZILL", "RTSB", "CNTL", "ARSA", "CHGZ", "MRSB", "NAUK", "RZSB", "SARE", "RUSI", "NKSH", "KMEZ", "VLHZ", "RTGZ", "CHKZ", "IGST", "PMSB", "TORS", "YAKG", "KRSB", "DZRD", "YRSB", "PAZA", "NFAZ", "NSVZ", "STSB", "KCHE", "PRFN", "VGSB", "TUZA", "PRMB", "KLSB", "TASB", "MISB", "ZVEZ", "KUZB", "AVAN", "LPSB", "GAZC", "VSYD", "ABIO", "APRI", "AQUA", "ASTR", "BAZA", "BELU", "BTBR", "CARM", "CBOM", "CNRU", "DATA", "DELI", "DIAS", "DOMRF", "EELT", "ELFV", "ELMT", "ENPG", "ETLN", "EUTR", "EVRZ", "FIXR", "FLOT", "GAZS", "GAZT", "GECO", "GEMA", "GEMC", "GLRX", "GTRK", "HEAD", "HNFG", "INCB", "IVAT", "KFBA", "KLVZ", "LEAS", "LENT", "LMBZ", "MBNK", "MDMG", "MGKL", "NKHP", "OZON", "OZPH", "POSI", "PRMD", "RAGR", "RENI", "RNFT", "RUAL", "SFIN", "SGZH", "SLEN", "SMLT", "SOFL", "SPBE", "SVCB", "SVET", "T", "TNSE", "UGLD", "UPRO", "UWGN", "VEON-RX", "VKCO", "VSEH", "WUSH", "X5", "YDEX", "ZAYM"]
