@@ -13,6 +13,8 @@ from datetime import date
 
 import pandas as pd
 
+from equity_factor_study.calendars import build_ru_non_workdays
+
 # Порог аномально большого дневного изменения (доля, например 0.5 = 50%).
 DEFAULT_LARGE_CHANGE = 0.5
 # Предельный календарный разрыв без торгов (дней).
@@ -174,26 +176,44 @@ def check_missing_price_on_trading_day(
 ) -> pd.DataFrame:
     """Выявить торговые дни, в которые отсутствует цена.
 
-    Календарь берётся как объединение торговых дат по всем инструментам, если
-    не передан явно. Если в торговый день есть строка, но цена пуста — это
-    замечание; если дата отсутствует вовсе — она тоже считается пропуском.
+    Календарь для каждого инструмента ограничивается его собственным
+    интервалом торгов (от первой до последней даты котировки): дни до дебюта
+    инструмента не считаются пропусками. Из календаря исключаются нерабочие
+    дни РФ (праздники, переносы), когда торги не идут.
+
+    Если ``reference_calendar`` передан, он используется как база для всех
+    инструментов (но всё равно ограничивается интервалом торгов каждого).
     """
     if table.empty or "trade_date" not in table.columns:
         return pd.DataFrame(columns=FINDING_COLUMNS)
 
     if reference_calendar is None:
         reference_calendar = set(table["trade_date"].dropna().unique())
+    # Привести календарь к ``datetime.date``.
+    reference_calendar = {d.date() if hasattr(d, "date") else d for d in reference_calendar}
 
     findings: list[dict] = []
     for secid, group in table.groupby("secid", sort=True):
-        # Торговый день считается без цены, если для него нет строки либо цена пуста.
-        present_with_price = {
+        dates = group["trade_date"].dropna()
+        if dates.empty:
+            continue
+        # Привести границы интервала торгов и даты к ``datetime.date``.
+        first = dates.min()
+        last = dates.max()
+        first_date = first.date() if hasattr(first, "date") else first
+        last_date = last.date() if hasattr(last, "date") else last
+        present_with_price_dates: set[date] = set()
+        for d, series in group.groupby("trade_date", sort=True):
+            if series["close"].notna().any():
+                present_with_price_dates.add(d.date() if hasattr(d, "date") else d)
+        # Рабочие дни в интервале торгов инструмента (без праздников РФ).
+        work_days = {
             d
-            for d, series in group.groupby("trade_date", sort=True)
-            if series["close"].notna().any()
+            for d in reference_calendar
+            if first_date <= d <= last_date and d not in build_ru_non_workdays(first_date, last_date)
         }
-        for d in sorted(reference_calendar):
-            if d not in present_with_price:
+        for d in sorted(work_days):
+            if d not in present_with_price_dates:
                 findings.append(
                     {
                         "secid": secid,

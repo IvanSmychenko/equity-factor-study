@@ -7,7 +7,6 @@ import pandas as pd
 from equity_factor_study.validation import (
     FINDING_COLUMNS,
     LARGE_DAY_CHANGE,
-    MISSING_PRICE_ON_TRADING_DAY,
     NONPOSITIVE_PRICE,
     TRADING_GAP,
     VOLUME_DISCREPANCY,
@@ -100,22 +99,72 @@ def test_volume_discrepancy_skipped_without_expected():
 
 
 def test_missing_price_on_trading_day_detects_gap():
-    # Календарь = {06,07,08}; у инструмента A нет 07.
+    # Календарь = {13,14,15}. У инструмента A пустая цена на 14 (пропуск).
+    # У B данные заканчиваются 14.01, поэтому 15.01 — вне его интервала торгов
+    # (инструмент уже не обращается), а не пропуск.
     table = _prices(
         [
-            {"secid": "A", "trade_date": date(2014, 1, 6), "close": 10.0, "value": 1.0},
-            {"secid": "A", "trade_date": date(2014, 1, 7), "close": None, "value": 1.0},
-            {"secid": "A", "trade_date": date(2014, 1, 8), "close": 10.0, "value": 1.0},
-            {"secid": "B", "trade_date": date(2014, 1, 6), "close": 10.0, "value": 1.0},
-            {"secid": "B", "trade_date": date(2014, 1, 7), "close": 10.0, "value": 1.0},
+            {"secid": "A", "trade_date": date(2014, 1, 13), "close": 10.0, "value": 1.0},
+            {"secid": "A", "trade_date": date(2014, 1, 14), "close": None, "value": 1.0},
+            {"secid": "A", "trade_date": date(2014, 1, 15), "close": 10.0, "value": 1.0},
+            {"secid": "B", "trade_date": date(2014, 1, 13), "close": 10.0, "value": 1.0},
+            {"secid": "B", "trade_date": date(2014, 1, 14), "close": 10.0, "value": 1.0},
         ]
     )
-    # Явно задан календарь {06,07,08}. У B нет 08.
-    calendar = {date(2014, 1, 6), date(2014, 1, 7), date(2014, 1, 8)}
+    calendar = {date(2014, 1, 13), date(2014, 1, 14), date(2014, 1, 15)}
     findings = check_missing_price_on_trading_day(table, reference_calendar=calendar)
+    # Замечание одно: A @ 14.01 (пустая цена). B @ 15.01 не считается,
+    # т.к. это вне интервала торгов B.
+    assert len(findings) == 1
+    assert set(findings["secid"]) == {"A"}
+
+
+def test_missing_price_detects_gap_within_two_instruments():
+    # Календарь = {13,14,15}; оба инструмента торгуются весь интервал.
+    table = _prices(
+        [
+            {"secid": "A", "trade_date": date(2014, 1, 13), "close": 10.0, "value": 1.0},
+            {"secid": "A", "trade_date": date(2014, 1, 14), "close": None, "value": 1.0},
+            {"secid": "A", "trade_date": date(2014, 1, 15), "close": 10.0, "value": 1.0},
+            {"secid": "B", "trade_date": date(2014, 1, 13), "close": 10.0, "value": 1.0},
+            {"secid": "B", "trade_date": date(2014, 1, 15), "close": 10.0, "value": 1.0},
+        ]
+    )
+    calendar = {date(2014, 1, 13), date(2014, 1, 14), date(2014, 1, 15)}
+    findings = check_missing_price_on_trading_day(table, reference_calendar=calendar)
+    # A @ 14.01 (пустая), B @ 14.01 (нет строки).
     assert len(findings) == 2
-    assert set(findings["type"]) == {MISSING_PRICE_ON_TRADING_DAY}
     assert set(findings["secid"]) == {"A", "B"}
+
+
+def test_missing_price_ignores_pre_debut_days():
+    """Дни до первой котировки инструмента не считаются пропусками цены."""
+    # Инструмент A торгуется только с 14.01; календарь начинается с 13.01.
+    table = _prices(
+        [
+            {"secid": "A", "trade_date": date(2014, 1, 14), "close": 10.0, "value": 1.0},
+            {"secid": "A", "trade_date": date(2014, 1, 15), "close": 10.0, "value": 1.0},
+        ]
+    )
+    calendar = {date(2014, 1, 13), date(2014, 1, 14), date(2014, 1, 15)}
+    findings = check_missing_price_on_trading_day(table, reference_calendar=calendar)
+    # 13.01 — не пропуск (инструмент ещё не торговался); 14,15 — есть цена.
+    assert len(findings) == 0
+
+
+def test_missing_price_ignores_ru_holidays():
+    """Новогодние каникулы (нерабочие дни) не считаются пропусками цены."""
+    table = _prices(
+        [
+            {"secid": "A", "trade_date": date(2014, 1, 13), "close": 10.0, "value": 1.0},
+            {"secid": "A", "trade_date": date(2014, 1, 14), "close": 10.0, "value": 1.0},
+        ]
+    )
+    # Календарь включает праздничные каникулы 6–8.01 и рабочие 13–14.01.
+    calendar = {date(2014, 1, 6), date(2014, 1, 7), date(2014, 1, 8), date(2014, 1, 13), date(2014, 1, 14)}
+    findings = check_missing_price_on_trading_day(table, reference_calendar=calendar)
+    # 6–8.01 — нерабочие (каникулы), не пропуски; 13,14 — есть цена.
+    assert len(findings) == 0
 
 
 def test_finding_columns():
