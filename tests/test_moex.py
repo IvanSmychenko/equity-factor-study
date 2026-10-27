@@ -124,6 +124,44 @@ def test_invalid_date_range_is_rejected(tmp_path):
             )
 
 
+def test_invalid_security_symbols_rejected(tmp_path):
+    """Код инструмента с недопустимым символом отклоняется, а дефис разрешён."""
+    from equity_factor_study.clients.moex import MOEXClient
+
+    with HttpClient() as http:
+        client = MOEXClient(http=http, raw_dir=tmp_path)
+        # Недопустимый символ (кириллица) — отклоняется.
+        with pytest.raises(ValueError, match="security"):
+            client.get_history_page(
+                security="ПРИМЕР",
+                from_date=date(2024, 1, 1),
+                till_date=date(2024, 12, 31),
+            )
+
+
+def test_security_with_hyphen_accepted(tmp_path):
+    """Код MOEX с дефисом (например, VEON-RX) — допустимый инструмент."""
+    import responses
+
+    from equity_factor_study.clients.moex import MOEXClient
+    from equity_factor_study.http_client import HttpClient
+
+    responses.get(
+        "https://iss.moex.com/iss/history/engines/stock/markets/shares/boards/TQBR/securities/VEON-RX.json",
+        json=_page_payload([["VEON-RX", "TQBR", "2014-06-16", 100.0]], index=0, total=1, page_size=1),
+        status=200,
+        match=[responses.matchers.query_param_matcher({"start": 0}, strict_match=False)],
+    )
+    with HttpClient() as http:
+        client = MOEXClient(http=http, raw_dir=tmp_path)
+        page = client.get_history_page(
+            security="VEON-RX",
+            from_date=date(2024, 1, 1),
+            till_date=date(2024, 12, 31),
+        )
+    assert not page.table.empty
+
+
 # --- полная пагинация (этап 3) -------------------------------------------------
 
 

@@ -119,7 +119,9 @@ class MOEXClient:
         board: str = "TQBR",
         start: int = 0,
     ) -> HistoryPage:
-        if not security.isascii() or not security.isalnum():
+        # Код инструмента MOEX может содержать дефис (например, VEON-RX),
+        # поэтому разрешаем латинские буквы, цифры и дефис, но не иные символы.
+        if not security.replace("-", "").isascii() or not security.replace("-", "").isalnum():
             raise ValueError("security должен содержать латинские буквы и цифры")
 
         if not board.isascii() or not board.isalnum():
