@@ -109,6 +109,37 @@ def test_load_catalog_paginates(tmp_path):
     assert len(result.raw_paths) == 3
 
 
+@responses.activate
+def test_load_catalog_stops_on_duplicate_pages(tmp_path):
+    """MOEX ISS игнорирует start: независимо от него возвращает те же 511 строк.
+
+    Тогда повторная страница не добавляет новых SECID — цикл сбор должен
+    завершиться после первой страницы, а не листать дубликаты бесконечно.
+    """
+    rows = [
+        _catalog_row(f"TICK{i:03d}", isin=f"RU{i:010d}")
+        for i in range(511)
+    ]
+    # Одна и та же выдача на любом start (как реальный MOEX ISS).
+    for start in (0, 511, 1022):
+        responses.get(
+            CATALOG_URL,
+            json=_catalog_payload(rows),
+            status=200,
+            match=[responses.matchers.query_param_matcher({"start": start}, strict_match=False)],
+        )
+
+    with HttpClient() as http:
+        client = MOEXClient(http=http, raw_dir=tmp_path)
+        result = load_catalog(client, board="TQBR")
+
+    # Собрана одна выдача режима; дубликаты не накапливаются и не качаются
+    # бесконечно (второй запрос лишь убеждается, что новых кодов нет —
+    # это и есть защита от зацикливания вместо прежних тысяч страниц).
+    assert len(result.raw_paths) == 2
+    assert len(result.common_shares) == 511
+
+
 def test_load_catalog_empty_returns_empty(tmp_path):
     # Без сети: пустая таблица на входе фильтрации.
     from equity_factor_study.pipelines.catalog import _filter_common_shares

@@ -54,13 +54,16 @@ def load_catalog(
 ) -> CatalogResult:
     """Загрузить справочник режима и отфильтровать обыкновенные акции.
 
-    Справочник может занимать несколько страниц (размер берётся из курсора
-    при его наличии). Возвращаются и полный справочник, и отфильтрованная
-    таблица обыкновенных акций.
+    Справочник может занимать несколько страниц. Параметр ``start`` у MOEX
+    ISS для этого endpoint'а фактически игнорируется (курсор не возвращается),
+    поэтому защита от зацикливания строится на появлении новых инструментов:
+    если очередная страница не добавляет ни одного ранее не виденного кода,
+    сбор завершается, а не продолжается бесконечно с дубликатами.
     """
     tables: list[pd.DataFrame] = []
     raw_paths: list[Path] = []
     start = 0
+    seen_secids: set[str] = set()
     while True:
         page: SecurityCatalog = client.get_securities(board=board, start=start)
         table = page.table
@@ -71,9 +74,18 @@ def load_catalog(
 
         tables.append(table)
 
-        # Позиция следующей страницы — по фактическому числу строк на странице.
+        # Новые (ранее не виденные) инструменты определяют прирост набора.
+        col = table["SECID"] if "SECID" in table.columns else table.iloc[:, 0]
+        batch = {str(value) for value in col.dropna().tolist()}
+        new_secids = batch - seen_secids
+        seen_secids |= batch
+
+        # Позиция следующей страницы — по фактическому числу строк.
         next_start = start + len(table)
-        if next_start <= start:
+
+        # Защита от зацикливания: если страница не добавила новых кодов и
+        # выдача не продвинулась, повторный сбор бессмыслен.
+        if not new_secids or next_start <= start:
             break
         start = next_start
 
@@ -82,6 +94,9 @@ def load_catalog(
         return CatalogResult(common_shares=empty, table=empty, raw_paths=raw_paths)
 
     full = pd.concat(tables, ignore_index=True)
+    # Устранить дубликаты по коду инструмента (MOEX может повторять выдачу).
+    if "SECID" in full.columns:
+        full = full.drop_duplicates(subset=["SECID"]).reset_index(drop=True)
     common = _filter_common_shares(full, resolve_security_type(security_type))
     return CatalogResult(common_shares=common, table=full, raw_paths=raw_paths)
 

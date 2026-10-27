@@ -310,7 +310,10 @@ class MOEXClient:
                 cursor_total=cursor_total,
             )
 
-        table = pd.concat(pages, ignore_index=True)
+        # Устранить all-NA колонки до конкатенации: иначе pandas предупреждает
+        # о будущем изменении поведения и результатные dtype могут отличаться.
+        clean_pages = [page[page.columns[~page.isna().all()]] for page in pages if not page.empty]
+        table = pd.concat(clean_pages, ignore_index=True) if clean_pages else pd.DataFrame()
         self._validate_full_history(table, cursor_total, security=security, board=board)
 
         return HistoryDownload(
