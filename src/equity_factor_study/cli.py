@@ -542,6 +542,140 @@ def _write_evaluation_report(report_dir: Path, report) -> None:
     print(f"Отчёт оценки: {path.resolve()}")
 
 
+def _cmd_selection(arguments: argparse.Namespace) -> int:
+    """Запустить процедуру отбора состава факторов и сравнение моделей A/B/C."""
+    import json
+
+    config = _load_config(arguments)
+    from equity_factor_study.model.orchestrator import load_panel
+    from equity_factor_study.model.panel import build_observation_matrix
+    from equity_factor_study.model.selection import run_selection_evaluation
+
+    panel_path = arguments.processed_dir / "monthly_panel.csv"
+    if not panel_path.exists():
+        print(f"Панель не найдена: {panel_path.resolve()}", file=sys.stderr)
+        return 1
+
+    panel = load_panel(panel_path)
+    matrix = build_observation_matrix(panel)
+    frame = matrix.features.copy()
+    frame["target_return_next_1m"] = matrix.target.to_numpy()
+    frame["month"] = matrix.identity["month"].to_numpy()
+    frame["secid"] = matrix.identity["secid"].to_numpy()
+
+    report = run_selection_evaluation(
+        frame,
+        training_window_months=config.model.training_window_months,
+        first_target_month=config.first_target_month,
+        evaluation_target_start=config.period.evaluation_target_start,
+        last_month=config.period.observation_end,
+        selection_window_months=config.selection.selection_window_months,
+        rebalance_frequency=config.selection.rebalance_frequency,
+        per_security=config.model.per_security,
+    )
+
+    report_dir = Path(arguments.report_dir)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "model_a": {
+            "mse": report.model_a.mse,
+            "mae": report.model_a.mae,
+            "forecast_count": report.model_a.forecast_count,
+        },
+        "model_b": {
+            "mse": report.model_b.mse,
+            "mae": report.model_b.mae,
+            "forecast_count": report.model_b.forecast_count,
+        },
+        "model_c": {
+            "mse": report.model_c.mse,
+            "mae": report.model_c.mae,
+            "forecast_count": report.model_c.forecast_count,
+        },
+        "comparison_ba": report.comparison_ba,
+        "comparison_ca": report.comparison_ca,
+        "comparison_ba_win_rate": report.comparison_ba_win_rate,
+        "rebalance_history": [
+            {"rebalance_date": str(r["rebalance_date"]), "selected_groups": r["selected_groups"]}
+            for r in report.rebalance_history.to_dict("records")
+        ],
+        "monthly_difference": [
+            {"month": m.isoformat(), "value": float(v)}
+            for m, v in (report.monthly_mse_c - report.monthly_mse_b).dropna().items()
+        ],
+    }
+    path = report_dir / "selection_report.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"Отчёт отбора: {path.resolve()}")
+    print(f"  модель A: MSE={report.model_a.mse:.6f}, MAE={report.model_a.mae:.6f}")
+    print(f"  модель B: MSE={report.model_b.mse:.6f}, MAE={report.model_b.mae:.6f}")
+    print(f"  модель C: MSE={report.model_c.mse:.6f}, MAE={report.model_c.mae:.6f}")
+    print(f"  C−B: {report.comparison_ba:.6f}   C−A: {report.comparison_ca:.6f}")
+    return 0
+
+
+def _cmd_bootstrap(arguments: argparse.Namespace) -> int:
+    """Бутстрэп-интервал разности MSE моделей B и C (парный блочный)."""
+    import json
+
+    config = _load_config(arguments)
+    from equity_factor_study.model.bootstrap import paired_block_bootstrap
+
+    selection_path = arguments.report_dir / "selection_report.json"
+    if not selection_path.exists():
+        print(f"Нет отчёта отбора: {selection_path.resolve()}", file=sys.stderr)
+        return 1
+    payload = json.loads(selection_path.read_text(encoding="utf-8"))
+    # Ряд месячных разностей MSE (C−B): пересоздаём из истории пересмотров,
+    # если она записана, иначе бутстрэп не выполним без месячного ряда.
+    diff_rows = payload.get("monthly_difference")
+    if not diff_rows:
+        print(
+            "Отчёт отбора не содержит ряда месячных разностей; запустите selection "
+            "с сохранением ряда.",
+            file=sys.stderr,
+        )
+        return 1
+    monthly_diff = _series_from_records(diff_rows)
+
+    block_months = config.bootstrap.block_months
+    result = paired_block_bootstrap(
+        monthly_diff,
+        block_months=block_months,
+        replicates=config.bootstrap.replicates,
+        confidence=config.bootstrap.confidence,
+        seed=config.bootstrap.seed,
+    )
+
+    report_dir = Path(arguments.report_dir)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    out = {
+        "point_estimate": result.point_estimate,
+        "mean": result.mean,
+        "lower": result.lower,
+        "upper": result.upper,
+        "replicates": result.replicates,
+        "block_months": result.block_months,
+        "confidence": result.confidence,
+        "seed": result.seed,
+        "n_observations": result.n_observations,
+    }
+    path = report_dir / "bootstrap_report.json"
+    path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"Отчёт бутстрэпа: {path.resolve()}")
+    print(f"  C−B тoч.оценка: {result.point_estimate:.8f}")
+    print(f"  {int(result.confidence*100)}% интервал: [{result.lower:.8f}, {result.upper:.8f}]")
+    print(f"  повторов: {result.replicates}, блок: {result.block_months} мес.")
+    return 0
+
+
+def _series_from_records(records: list[dict]) -> pd.Series:
+    """Построить ряд из списка записей {month, value}."""
+    keys = [r["month"] for r in records]
+    vals = [r["value"] for r in records]
+    return pd.Series(vals, index=pd.to_datetime(keys), dtype=float)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Построить парсер аргументов командной строки."""
     parser = argparse.ArgumentParser(
@@ -684,6 +818,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Оценка модели и полезности факторов на построенной панели.",
     )
     evaluate_parser.set_defaults(handler=_cmd_evaluate)
+
+    selection_parser = subparsers.add_parser(
+        "selection",
+        help="Отбор состава факторов и сравнение моделей A/B/C (модель C).",
+    )
+    selection_parser.set_defaults(handler=_cmd_selection)
+
+    bootstrap_parser = subparsers.add_parser(
+        "bootstrap",
+        help="Парный блочный бутстрэп разности MSE моделей B и C.",
+    )
+    bootstrap_parser.set_defaults(handler=_cmd_bootstrap)
 
     return parser
 

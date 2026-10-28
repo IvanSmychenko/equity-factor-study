@@ -354,6 +354,8 @@ class ModelComparison:
     comparison_ca: float   # разность (C−A)
     comparison_ba_win_rate: float  # доля месяцев, где C точнее B
     rebalance_history: pd.DataFrame
+    monthly_mse_b: pd.Series
+    monthly_mse_c: pd.Series
 
 
 @dataclass(frozen=True)
@@ -461,6 +463,8 @@ def run_selection_evaluation(
         comparison_ca=ca_diff,
         comparison_ba_win_rate=win_rate,
         rebalance_history=hist,
+        monthly_mse_b=_slice_series(mse_b, eval_cutoff),
+        monthly_mse_c=_slice_series(mse_c, eval_cutoff),
     )
     return comparison
 
@@ -528,3 +532,9 @@ def _month_values(series: pd.Series, months: list[pd.Timestamp]) -> np.ndarray:
 
 def np_greater(a, b) -> pd.Series:
     return pd.Series(a) > pd.Series(b)
+
+
+def _slice_series(series: pd.Series, cutoff: pd.Timestamp) -> pd.Series:
+    """Вернуть значения ряда с индексом не раньше ``cutoff``."""
+    out = series[series.index >= cutoff]
+    return out.astype(float)

@@ -262,6 +262,40 @@ def test_run_selection_evaluation_compares_models():
     assert not report.rebalance_history.empty
 
 
+def test_paired_block_bootstrap_deterministic():
+    """Бутстрэп детерминирован при фиксированном зерне."""
+    from equity_factor_study.model.bootstrap import paired_block_bootstrap
+
+    idx = pd.date_range("2021-01-01", periods=68, freq="MS")
+    diff = pd.Series(0.0001 * np.sin(np.arange(68)) + 0.00001, index=idx)
+    r1 = paired_block_bootstrap(diff, block_months=6, replicates=1000, seed=20140101)
+    r2 = paired_block_bootstrap(diff, block_months=6, replicates=1000, seed=20140101)
+    assert r1.lower == r2.lower
+    assert r1.upper == r2.upper
+    assert r1.mean == r2.mean
+
+
+def test_paired_block_bootstrap_interval_bounds():
+    """Интервал содержит точечную оценку при симметричном ряде близко к нулю."""
+    from equity_factor_study.model.bootstrap import paired_block_bootstrap
+
+    idx = pd.date_range("2021-01-01", periods=68, freq="MS")
+    diff = pd.Series(np.full(68, 0.0005), index=idx)
+    r = paired_block_bootstrap(diff, block_months=6, replicates=2000, seed=7)
+    assert r.point_estimate == 0.0005
+    # Интервал должен быть узким при постоянном ряде.
+    assert r.lower <= r.point_estimate <= r.upper
+
+
+def test_paired_block_bootstrap_requires_block_shorter_than_series():
+    from equity_factor_study.model.bootstrap import BootstrapError, paired_block_bootstrap
+
+    idx = pd.date_range("2021-01-01", periods=10, freq="MS")
+    diff = pd.Series(np.zeros(10), index=idx)
+    with pytest.raises(BootstrapError):
+        paired_block_bootstrap(diff, block_months=12, replicates=100, seed=1)
+
+
 def test_evaluate_forecasts_securities_then_months(observation_matrix):
     frame = _frame(observation_matrix)
     forecasts = walk_forward(
