@@ -408,3 +408,66 @@ def test_evaluate_command_missing_panel_returns_one(tmp_path, capsys):
         "--config", str(tmp_config), "--processed-dir", str(tmp_path), "evaluate",
     ])
     assert code == 1
+
+
+@pytest.fixture()
+def panel_and_config(tmp_path):
+    """Панель непрерывного покрытия и временная конфигурация (без сети)."""
+    from datetime import date
+
+    from equity_factor_study.checks.synthetic import build_long_continuous_panel
+
+    tmp_config_dir = tmp_path / "configs"
+    tmp_config_dir.mkdir()
+    tmp_config = tmp_config_dir / "study.toml"
+    tmp_config.write_text(DEFAULT_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+
+    processed_dir = tmp_path / "processed"
+    processed_dir.mkdir()
+    panel = build_long_continuous_panel(start=date(2014, 1, 1), end=date(2026, 9, 1))
+    out = panel.copy()
+    out["month"] = out["month"].map(lambda d: d.isoformat() if hasattr(d, "isoformat") else d)
+    out["price_date"] = out["price_date"].map(lambda d: d.isoformat() if hasattr(d, "isoformat") else d)
+    out.to_csv(processed_dir / "monthly_panel.csv", index=False)
+    return tmp_path, tmp_config, processed_dir
+
+
+def test_selection_command_writes_report(panel_and_config, capsys):
+    """selection считает модели A/B/C и пишет отчёт (без сети)."""
+    tmp_path, tmp_config, processed_dir = panel_and_config
+    report_dir = tmp_path / "reports"
+    code = main([
+        "--config", str(tmp_config), "--processed-dir", str(processed_dir),
+        "--report-dir", str(report_dir), "selection",
+    ])
+    assert code == 0
+    assert (report_dir / "selection_report.json").exists()
+    assert "Отчёт отбора" in capsys.readouterr().out
+
+
+def test_bootstrap_command_writes_report(panel_and_config, capsys):
+    """bootstrap строит интервал разности MSE по отчёту отбора (без сети)."""
+    tmp_path, tmp_config, processed_dir = panel_and_config
+    report_dir = tmp_path / "reports"
+    code = main([
+        "--config", str(tmp_config), "--processed-dir", str(processed_dir),
+        "--report-dir", str(report_dir), "selection",
+    ])
+    assert code == 0
+    code = main([
+        "--config", str(tmp_config), "--processed-dir", str(processed_dir),
+        "--report-dir", str(report_dir), "bootstrap",
+    ])
+    assert code == 0
+    assert (report_dir / "bootstrap_report.json").exists()
+    assert "Отчёт бутстрэпа" in capsys.readouterr().out
+
+
+def test_bootstrap_command_missing_selection_returns_one(panel_and_config, capsys):
+    """bootstrap без отчёта отбора завершается кодом 1."""
+    tmp_path, tmp_config, processed_dir = panel_and_config
+    code = main([
+        "--config", str(tmp_config), "--processed-dir", str(processed_dir),
+        "--report-dir", str(tmp_path / "empty"), "bootstrap",
+    ])
+    assert code == 1
