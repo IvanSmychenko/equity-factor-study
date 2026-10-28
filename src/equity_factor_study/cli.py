@@ -614,6 +614,112 @@ def _cmd_selection(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_sensitivity(arguments: argparse.Namespace) -> int:
+    """Запустить проверки устойчивости процедуры отбора (раздел 4.3)."""
+    import json
+
+    config = _load_config(arguments)
+    from equity_factor_study.model.orchestrator import load_panel
+    from equity_factor_study.model.panel import build_observation_matrix
+    from equity_factor_study.model.selection import run_selection_evaluation
+    from equity_factor_study.model.sensitivity import (
+        sensitivity_by_block,
+        sensitivity_by_exclusion,
+        sensitivity_by_extreme_months,
+        sensitivity_by_metric,
+        sensitivity_by_selection_window,
+        sensitivity_by_window,
+        sensitivity_summary,
+    )
+
+    panel_path = arguments.processed_dir / "monthly_panel.csv"
+    if not panel_path.exists():
+        print(f"Панель не найдена: {panel_path.resolve()}", file=sys.stderr)
+        return 1
+
+    panel = load_panel(panel_path)
+    matrix = build_observation_matrix(panel)
+    frame = matrix.features.copy()
+    frame["target_return_next_1m"] = matrix.target.to_numpy()
+    frame["month"] = matrix.identity["month"].to_numpy()
+    frame["secid"] = matrix.identity["secid"].to_numpy()
+
+    bcfg = config.bootstrap
+    mcfg = config.model
+    scfg = config.selection
+
+    # Основная спецификация — эталон для сравнения с чувствительностью.
+    base = run_selection_evaluation(
+        frame,
+        training_window_months=mcfg.training_window_months,
+        first_target_month=config.first_target_month,
+        evaluation_target_start=config.period.evaluation_target_start,
+        last_month=config.period.observation_end,
+        selection_window_months=scfg.selection_window_months,
+        per_security=mcfg.per_security,
+    )
+
+    all_rows = []
+    # 1. Длина обучающего окна.
+    all_rows += sensitivity_by_window(
+        frame, windows=[mcfg.training_window_months, *mcfg.window_sensitivity],
+        first_target_month=config.first_target_month,
+        evaluation_target_start=config.period.evaluation_target_start,
+        last_month=config.period.observation_end,
+        selection_window_months=scfg.selection_window_months,
+        block_months=bcfg.block_months, replicates=bcfg.replicates,
+        confidence=bcfg.confidence, seed=bcfg.seed,
+    )
+    # 2. Длина проверочного периода отбора.
+    all_rows += sensitivity_by_selection_window(
+        frame, training_window_months=mcfg.training_window_months,
+        selection_windows=[scfg.selection_window_months, *scfg.selection_window_sensitivity],
+        first_target_month=config.first_target_month,
+        evaluation_target_start=config.period.evaluation_target_start,
+        last_month=config.period.observation_end,
+        block_months=bcfg.block_months, replicates=bcfg.replicates,
+        confidence=bcfg.confidence, seed=bcfg.seed,
+    )
+    # 3. Длина блока бутстрэпа (без пересчёта моделей).
+    all_rows += sensitivity_by_block(
+        base, blocks=[bcfg.block_months, *bcfg.block_sensitivity],
+        replicates=bcfg.replicates, confidence=bcfg.confidence, seed=bcfg.seed,
+    )
+    # 4. Состав выборки (исключение бумаг).
+    all_rows += sensitivity_by_exclusion(
+        frame, training_window_months=mcfg.training_window_months,
+        first_target_month=config.first_target_month,
+        evaluation_target_start=config.period.evaluation_target_start,
+        last_month=config.period.observation_end,
+        selection_window_months=scfg.selection_window_months,
+        block_months=bcfg.block_months, replicates=bcfg.replicates,
+        confidence=bcfg.confidence, seed=bcfg.seed,
+    )
+    # 5. Экстремальные месяцы.
+    all_rows += sensitivity_by_extreme_months(
+        base, block_months=bcfg.block_months, replicates=bcfg.replicates,
+        confidence=bcfg.confidence, seed=bcfg.seed,
+    )
+    # 6. MAE как основная метрика.
+    all_rows += sensitivity_by_metric(
+        base, block_months=bcfg.block_months, replicates=bcfg.replicates,
+        confidence=bcfg.confidence, seed=bcfg.seed,
+    )
+
+    table = sensitivity_summary(all_rows)
+    report_dir = Path(arguments.report_dir)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    out = table.to_dict("records")
+    path = report_dir / "sensitivity_report.json"
+    path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"Отчёт устойчивости: {path.resolve()}")
+    for rec in out:
+        ci = "содержит 0" if rec.get("ci_contains_zero") else "не содержит 0"
+        print(f"  {rec['specification']:28s} C−B={rec['comparison_ba']:.6f} "
+              f"CI=[{rec['lower']:.6f}, {rec['upper']:.6f}] {ci}")
+    return 0
+
+
 def _cmd_bootstrap(arguments: argparse.Namespace) -> int:
     """Бутстрэп-интервал разности MSE моделей B и C (парный блочный)."""
     import json
@@ -830,6 +936,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Парный блочный бутстрэп разности MSE моделей B и C.",
     )
     bootstrap_parser.set_defaults(handler=_cmd_bootstrap)
+
+    sensitivity_parser = subparsers.add_parser(
+        "sensitivity",
+        help="Проверки устойчивости процедуры отбора (длина окна/блока, исключения).",
+    )
+    sensitivity_parser.set_defaults(handler=_cmd_sensitivity)
 
     return parser
 

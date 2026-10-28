@@ -296,6 +296,45 @@ def test_paired_block_bootstrap_requires_block_shorter_than_series():
         paired_block_bootstrap(diff, block_months=12, replicates=100, seed=1)
 
 
+def test_sensitivity_by_block_varying_width():
+    """Смена длины блока не меняет точечную оценку, лишь ширину интервала."""
+    from equity_factor_study.model.selection import run_selection_evaluation
+    from equity_factor_study.model.sensitivity import sensitivity_by_block
+
+    panel = build_long_continuous_panel(start=date(2014, 1, 1), end=date(2026, 9, 1))
+    mat = build_observation_matrix(panel)
+    frame = mat.features.copy()
+    frame["target_return_next_1m"] = mat.target.to_numpy()
+    frame["month"] = mat.identity["month"].to_numpy()
+    frame["secid"] = mat.identity["secid"].to_numpy()
+
+    comp = run_selection_evaluation(
+        frame, training_window_months=48, first_target_month=FIRST_TARGET,
+        evaluation_target_start=date(2021, 1, 1), last_month=EVAL_END, per_security=True,
+    )
+    rows = sensitivity_by_block(comp, blocks=[3, 6, 12],
+                                replicates=1000, confidence=0.95, seed=20140101)
+    assert len(rows) == 3
+    # Точечная оценка одинакова во всех строках (различается лишь интервал).
+    assert abs(rows[0].comparison_ba - rows[1].comparison_ba) < 1e-9
+    assert abs(rows[0].comparison_ba - rows[2].comparison_ba) < 1e-9
+
+
+def test_sensitivity_summary_lists_columns():
+    from equity_factor_study.model.sensitivity import SensitivityRow, sensitivity_summary
+
+    rows = [
+        SensitivityRow(specification="s", comparison_ba=-0.5, lower=-1.0,
+                       upper=-0.1, ci_contains_zero=False, n_observations=68),
+    ]
+    table = sensitivity_summary(rows)
+    assert list(table.columns) == [
+        "specification", "comparison_ba", "lower", "upper",
+        "ci_contains_zero", "n_observations", "detail",
+    ]
+    assert table.iloc[0]["comparison_ba"] == -0.5
+
+
 def test_evaluate_forecasts_securities_then_months(observation_matrix):
     frame = _frame(observation_matrix)
     forecasts = walk_forward(

@@ -219,6 +219,25 @@ def monthly_mse_series(forecasts: list[Forecast]) -> pd.Series:
     return pd.Series(rows).sort_index()
 
 
+def monthly_metric_frame(forecasts: list[Forecast]) -> pd.DataFrame:
+    """Месячные ошибки одной модели по агрегации securities_then_months.
+
+    Для каждого целевого месяца ошибка сначала усредняется по акциям (внутри
+    месяца), затем возвращается как MSE и MAE этого месяца. Возвращает
+    DataFrame с индексом „первое число“ месяца и колонками ``mse``, ``mae``.
+    """
+    frame = _flatten(forecasts)
+    if frame.empty:
+        return pd.DataFrame(columns=["mse", "mae"], dtype=float)
+    frame["month"] = pd.to_datetime(frame["month"])
+    rows: list[dict] = []
+    for month, group in frame.groupby("month"):
+        mse, mae = _metrics_from_lists(group["actual"].iloc[0], group["predicted"].iloc[0])
+        rows.append({"month": month, "mse": mse, "mae": mae})
+    out = pd.DataFrame(rows).set_index("month").sort_index()
+    return out[["mse", "mae"]].astype(float)
+
+
 def rebalance_dates(
     *, first_error_month: date,  # первый целевой месяц с прогнозом
     evaluation_target_start: date,
@@ -356,6 +375,10 @@ class ModelComparison:
     rebalance_history: pd.DataFrame
     monthly_mse_b: pd.Series
     monthly_mse_c: pd.Series
+    monthly_mse_a: pd.Series
+    monthly_mae_a: pd.Series
+    monthly_mae_b: pd.Series
+    monthly_mae_c: pd.Series
 
 
 @dataclass(frozen=True)
@@ -396,7 +419,7 @@ def run_selection_evaluation(
         raise SelectionError("отбор состава реализован только для per_security=True")
 
     compositions = build_compositions()
-    mse_by_comp: dict[Composition, pd.Series] = {}
+    metric_by_comp: dict[Composition, pd.DataFrame] = {}
     for comp in compositions:
         if not comp.features:
             continue  # пустой состав — это модель A (историческое среднее)
@@ -408,9 +431,10 @@ def run_selection_evaluation(
             last_month=last_month,
             per_security=per_security,
         )
-        mse_by_comp[comp] = monthly_mse_series(forecasts)
+        metric_by_comp[comp] = monthly_metric_frame(forecasts)
 
     # Сводная история выбора состава (документирование поведения правила).
+    mse_by_comp = _mse_series_by_comp(metric_by_comp)
     hist = rebalance_history(
         mse_by_comp,
         evaluation_target_start=evaluation_target_start,
@@ -428,7 +452,7 @@ def run_selection_evaluation(
         last_month=last_month,
         per_security=per_security,
     )
-    mse_b = monthly_mse_series(model_b_forecasts)
+    metric_b = monthly_metric_frame(model_b_forecasts)
 
     # Модель A — историческое среднее.
     model_a_forecasts = historical_average_forecast(
@@ -438,88 +462,97 @@ def run_selection_evaluation(
         last_month=last_month,
         per_security=per_security,
     )
-    mse_a = monthly_mse_series(model_a_forecasts)
+    metric_a = monthly_metric_frame(model_a_forecasts)
 
-    # Модель C — месячная MSE по динамически выбранному составу.
-    mse_c = _apply_selected_composition_mse(
-        mse_by_comp, hist, evaluation_target_start=evaluation_target_start
+    # Модель C — месячные ошибки по динамически выбранному составу.
+    metric_c = _apply_selected_composition_metric(
+        metric_by_comp, hist, evaluation_target_start=evaluation_target_start
     )
 
     # Единая маска наблюдений на периоде оценки: пересечение месяцев с прогнозом.
     eval_cutoff = pd.Timestamp(evaluation_target_start)
-    months = sorted({m for m in _union(mse_b, mse_a, mse_c) if m >= eval_cutoff})
-    a_mse = _month_values(mse_a, months)
-    b_mse = _month_values(mse_b, months)
-    c_mse = _month_values(mse_c, months)
+    months = sorted({m for m in _union_index([metric_a.index, metric_b.index, metric_c.index]) if m >= eval_cutoff})
+    a_mse = _month_values(metric_a["mse"], months)
+    b_mse = _month_values(metric_b["mse"], months)
+    c_mse = _month_values(metric_c["mse"], months)
+    a_mae = _month_values(metric_a["mae"], months)
+    b_mae = _month_values(metric_b["mae"], months)
+    c_mae = _month_values(metric_c["mae"], months)
     ba_diff = float(np.mean(c_mse) - np.mean(b_mse))
     ca_diff = float(np.mean(c_mse) - np.mean(a_mse))
     win_rate = float(np.mean(np.asarray(c_mse) < np.asarray(b_mse))) if months else float("nan")
 
     comparison = ModelComparison(
-        model_a=MonthError(mse=float(np.mean(a_mse)), mae=float(np.sqrt(np.mean(a_mse ** 2))), forecast_count=len(months)),
-        model_b=MonthError(mse=float(np.mean(b_mse)), mae=float(np.sqrt(np.mean(b_mse ** 2))), forecast_count=len(months)),
-        model_c=MonthError(mse=float(np.mean(c_mse)), mae=float(np.sqrt(np.mean(c_mse ** 2))), forecast_count=len(months)),
+        model_a=MonthError(mse=float(np.mean(a_mse)), mae=float(np.mean(a_mae)), forecast_count=len(months)),
+        model_b=MonthError(mse=float(np.mean(b_mse)), mae=float(np.mean(b_mae)), forecast_count=len(months)),
+        model_c=MonthError(mse=float(np.mean(c_mse)), mae=float(np.mean(c_mae)), forecast_count=len(months)),
         comparison_ba=ba_diff,
         comparison_ca=ca_diff,
         comparison_ba_win_rate=win_rate,
         rebalance_history=hist,
-        monthly_mse_b=_slice_series(mse_b, eval_cutoff),
-        monthly_mse_c=_slice_series(mse_c, eval_cutoff),
+        monthly_mse_a=_slice_series(metric_a["mse"], eval_cutoff),
+        monthly_mse_b=_slice_series(metric_b["mse"], eval_cutoff),
+        monthly_mse_c=_slice_series(metric_c["mse"], eval_cutoff),
+        monthly_mae_a=_slice_series(metric_a["mae"], eval_cutoff),
+        monthly_mae_b=_slice_series(metric_b["mae"], eval_cutoff),
+        monthly_mae_c=_slice_series(metric_c["mae"], eval_cutoff),
     )
     return comparison
 
 
-def _apply_selected_composition_mse(
-    mse_by_comp: dict[Composition, pd.Series],
+def _mse_series_by_comp(metric_by_comp: dict[Composition, pd.DataFrame]) -> dict[Composition, pd.Series]:
+    """Извлечь месячные MSE по каждому составу из таблиц метрик."""
+    return {comp: frame["mse"].astype(float) for comp, frame in metric_by_comp.items()}
+
+
+def _apply_selected_composition_metric(
+    metric_by_comp: dict[Composition, pd.DataFrame],
     hist: pd.DataFrame,
     *,
     evaluation_target_start: date,
-) -> pd.Series:
-    """Месячная MSE модели C по динамически выбранному составу.
+) -> pd.DataFrame:
+    """Месячные ошибки (MSE и MAE) модели C по динамически выбранному составу.
 
-    Для каждого целевого месяца берётся MSE состава, выбранного на последней
-    дате пересмотра, не позднее этого месяца. Для месяцев до первой даты
-    пересмотра (разогрев) состав не определён, поэтому они не участвуют в
-    периоде оценки, который начинается с ``evaluation_target_start``.
+    Для каждого целевого месяца берутся ошибки состава, выбранного на последней
+    дате пересмотра, не позднее этого месяца. До первого пересмотра (разогрев)
+    состав не определён; в периоде оценки эти месяцы не участвуют, а составом
+    по умолчанию служит полный набор.
     """
+    all_months = sorted({m for frame in metric_by_comp.values() for m in frame.index})
+    full = max(metric_by_comp, key=lambda c: c.size)
     if hist.empty:
-        # Нет дат пересмотра — модель C сводится к полному набору до конца.
-        # По умолчанию берем состав с наибольшим числом признаков.
-        full = max(mse_by_comp, key=lambda c: c.size)
-        return mse_by_comp[full].copy()
+        return metric_by_comp[full].copy()
 
-    all_months = sorted({m for series in mse_by_comp.values() for m in series.index})
-    # Даты пересмотра и выбранный состав (сопоставление по группам).
     rebase = list(hist.itertuples(index=False))
-    # Ограничиваем период оценки (после разогрева) — состав выбирается с даты
-    # пересмотра; используем полный набор для месяцев до первого пересмотра.
-    full = max(mse_by_comp, key=lambda c: c.size)
-    result = {}
+    rows: list[dict] = []
     for m in all_months:
         if m < pd.Timestamp(evaluation_target_start):
             continue
         selected = None
         for row in rebase:
             if pd.Timestamp(row.rebalance_date) <= m:
-                selected = _composition_from_group_name(row.selected_groups, mse_by_comp)
+                selected = _composition_from_group_name(row.selected_groups, metric_by_comp)
         if selected is None:
             selected = full
-        result[m] = mse_by_comp[selected][m]
-    return pd.Series(result).sort_index()
+        frame = metric_by_comp[selected]
+        rows.append({"month": m, "mse": frame["mse"][m], "mae": frame["mae"][m]})
+    out = pd.DataFrame(rows).set_index("month").sort_index()
+    return out[["mse", "mae"]].astype(float)
 
 
-def _composition_from_group_name(name: str, mse_by_comp: dict[Composition, pd.Series]) -> Composition:
+def _composition_from_group_name(name: str, metric_by_comp: dict[Composition, pd.DataFrame]) -> Composition:
     """Сопоставить имя группы с составом."""
-    for comp in mse_by_comp:
+    for comp in metric_by_comp:
         if _group_name(comp.groups) == name:
             return comp
     raise SelectionError(f"не найден состав с группами: {name!r}")
 
 
-def _union(*series: pd.Series) -> set[pd.Timestamp]:
+def _union_index(indices: list[pd.Index]) -> set[pd.Timestamp]:
+    """Объединить несколько индексов дат."""
     result: set[pd.Timestamp] = set()
-    for s in series:
-        result.update(s.index)
+    for idx in indices:
+        result.update(idx)
     return result
 
 
