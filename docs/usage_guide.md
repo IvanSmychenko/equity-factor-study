@@ -40,6 +40,8 @@ configs/study.toml  ──►  все команды ниже читают ег�
     evaluate     OLS с полным набором + полезность факторов
     selection    отбор состава факторов, сравнение моделей A/B/C
     bootstrap    парный блочный бутстрэп разности MSE моделей B и C
+    sensitivity  проверки устойчивости процедуры отбора
+    report       сводный отчёт (markdown + графики)
 ```
 
 **Порядок запуска** почти всегда одинаков: `catalog → universe → prices →
@@ -61,6 +63,8 @@ key-rate → audit → panel`. Далее — анализ панели (см. �
 | `evaluate` | панель | OLS + полезность факторов | `data/reports/model_evaluation.json` |
 | `selection` | панель | модели A/B/C, правило отбора | `data/reports/selection_report.json` |
 | `bootstrap` | отчёт отбора | интервал разности MSE (C−B) | `data/reports/bootstrap_report.json` |
+| `sensitivity` | панель | проверки устойчивости | `data/reports/sensitivity_report.json` |
+| `report` | панель | сводный отчёт + графики | `data/reports/summary_report.md`, `*.png` |
 
 Каталоги `data/raw`, `data/interim`, `data/processed`, `data/reports`
 вынесены из-под контроля версий (как и `configs/universe.lock.toml`).
@@ -290,7 +294,15 @@ MSE (C−B). Перекрывающиеся блоки длины `block_months=
 ухудшает; содержит ноль — данных недостаточно.
 
 Выводы по моделям A/B/C и бутстрэпу — содержательная часть исследования
-(этап §6), выполняемая после приёмки панели.
+(этап §6), выполняемая после приёмки панели. Команда `report` собирает всё в
+единый сводный отчёт (`summary_report.md`) с таблицами метрик, интерпретацией
+по трём сценариям и тремя графиками:
+
+* `errors_B_C.png` — месячная MSE моделей B и C на периоде оценки;
+* `rebalance_history.png` — число признаков выбранного состава по датам
+  пересмотра;
+* `bootstrap_distribution.png` — распределение бутстрэп-средних разности
+  C−B с границами 95% интервала и линией нуля.
 
 ---
 

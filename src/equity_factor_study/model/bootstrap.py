@@ -36,6 +36,7 @@ class BootstrapResult:
     seed: int                      # зерно генератора
     n_blocks: int                  # число блоков (информация для воспроизводимости)
     n_observations: int            # длина исходного ряда
+    means: tuple[float, ...] = ()  # бутстрэп-средние по повторам (для графиков)
 
 
 def paired_block_bootstrap(
@@ -103,6 +104,7 @@ def paired_block_bootstrap(
         seed=seed,
         n_blocks=n_blocks,
         n_observations=n,
+        means=tuple(means.tolist()),
     )
 
 

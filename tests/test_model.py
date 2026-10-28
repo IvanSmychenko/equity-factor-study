@@ -335,6 +335,62 @@ def test_sensitivity_summary_lists_columns():
     assert table.iloc[0]["comparison_ba"] == -0.5
 
 
+def test_plot_functions_write_png(tmp_path):
+    """Графики создаются как PNG-файлы."""
+    from equity_factor_study.model.bootstrap import paired_block_bootstrap
+    from equity_factor_study.model.plots import (
+        plot_bootstrap_distribution,
+        plot_monthly_errors,
+        plot_rebalance_history,
+    )
+    from equity_factor_study.model.selection import run_selection_evaluation
+
+    panel = build_long_continuous_panel(start=date(2014, 1, 1), end=date(2026, 9, 1))
+    mat = build_observation_matrix(panel)
+    frame = mat.features.copy()
+    frame["target_return_next_1m"] = mat.target.to_numpy()
+    frame["month"] = mat.identity["month"].to_numpy()
+    frame["secid"] = mat.identity["secid"].to_numpy()
+    comp = run_selection_evaluation(
+        frame, training_window_months=48, first_target_month=FIRST_TARGET,
+        evaluation_target_start=date(2021, 1, 1), last_month=EVAL_END, per_security=True,
+    )
+    diff = (comp.monthly_mse_c - comp.monthly_mse_b).dropna()
+    boot = paired_block_bootstrap(diff, block_months=6, replicates=500, seed=1)
+
+    p1 = plot_monthly_errors(comp, path=tmp_path / "errors.png")
+    p2 = plot_rebalance_history(comp, path=tmp_path / "rebalance.png")
+    p3 = plot_bootstrap_distribution(boot, path=tmp_path / "boot.png")
+    assert p1.exists() and p2.exists() and p3.exists()
+    assert p1.suffix == ".png" and p2.suffix == ".png" and p3.suffix == ".png"
+
+
+def test_summary_report_content(tmp_path):
+    """Сводный отчёт содержит таблицы метрик и интерпретацию."""
+    from equity_factor_study.model.bootstrap import paired_block_bootstrap
+    from equity_factor_study.model.report import write_summary_report
+    from equity_factor_study.model.selection import run_selection_evaluation
+
+    panel = build_long_continuous_panel(start=date(2014, 1, 1), end=date(2026, 9, 1))
+    mat = build_observation_matrix(panel)
+    frame = mat.features.copy()
+    frame["target_return_next_1m"] = mat.target.to_numpy()
+    frame["month"] = mat.identity["month"].to_numpy()
+    frame["secid"] = mat.identity["secid"].to_numpy()
+    comp = run_selection_evaluation(
+        frame, training_window_months=48, first_target_month=FIRST_TARGET,
+        evaluation_target_start=date(2021, 1, 1), last_month=EVAL_END, per_security=True,
+    )
+    diff = (comp.monthly_mse_c - comp.monthly_mse_b).dropna()
+    boot = paired_block_bootstrap(diff, block_months=6, replicates=500, seed=1)
+    path = write_summary_report(comp, boot=boot, aggregate="securities_then_months",
+                                path=tmp_path / "summary.md")
+    text = path.read_text(encoding="utf-8")
+    assert "Модель" in text
+    assert "Средняя разность MSE" in text
+    assert "Доля месяцев" in text
+
+
 def test_evaluate_forecasts_securities_then_months(observation_matrix):
     frame = _frame(observation_matrix)
     forecasts = walk_forward(

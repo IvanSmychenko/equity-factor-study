@@ -720,6 +720,71 @@ def _cmd_sensitivity(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_report(arguments: argparse.Namespace) -> int:
+    """Сводный отчёт: модели A/B/C, бутстрэп, графики и интерпретация."""
+    config = _load_config(arguments)
+    from equity_factor_study.model.bootstrap import paired_block_bootstrap
+    from equity_factor_study.model.orchestrator import load_panel
+    from equity_factor_study.model.panel import build_observation_matrix
+    from equity_factor_study.model.plots import (
+        plot_bootstrap_distribution,
+        plot_monthly_errors,
+        plot_rebalance_history,
+    )
+    from equity_factor_study.model.report import write_summary_report
+    from equity_factor_study.model.selection import run_selection_evaluation
+
+    panel_path = arguments.processed_dir / "monthly_panel.csv"
+    if not panel_path.exists():
+        print(f"Панель не найдена: {panel_path.resolve()}", file=sys.stderr)
+        return 1
+
+    panel = load_panel(panel_path)
+    matrix = build_observation_matrix(panel)
+    frame = matrix.features.copy()
+    frame["target_return_next_1m"] = matrix.target.to_numpy()
+    frame["month"] = matrix.identity["month"].to_numpy()
+    frame["secid"] = matrix.identity["secid"].to_numpy()
+
+    bcfg = config.bootstrap
+    mcfg = config.model
+    scfg = config.selection
+
+    comparison = run_selection_evaluation(
+        frame,
+        training_window_months=mcfg.training_window_months,
+        first_target_month=config.first_target_month,
+        evaluation_target_start=config.period.evaluation_target_start,
+        last_month=config.period.observation_end,
+        selection_window_months=scfg.selection_window_months,
+        per_security=mcfg.per_security,
+    )
+    diff = (comparison.monthly_mse_c - comparison.monthly_mse_b).dropna()
+    boot = paired_block_bootstrap(
+        diff, block_months=bcfg.block_months, replicates=bcfg.replicates,
+        confidence=bcfg.confidence, seed=bcfg.seed,
+    )
+
+    report_dir = Path(arguments.report_dir)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    aggregate = config.evaluation.aggregation
+
+    report_path = write_summary_report(
+        comparison, boot=boot, aggregate=aggregate,
+        path=report_dir / "summary_report.md",
+    )
+    p1 = plot_monthly_errors(comparison, path=report_dir / "errors_B_C.png")
+    p2 = plot_rebalance_history(comparison, path=report_dir / "rebalance_history.png")
+    p3 = plot_bootstrap_distribution(boot, path=report_dir / "bootstrap_distribution.png")
+
+    print(f"Сводный отчёт: {report_path.resolve()}")
+    print(f"  график ошибок B/C: {p1.resolve()}")
+    print(f"  график пересмотров: {p2.resolve()}")
+    print(f"  график бутстрэпа: {p3.resolve()}")
+    print(f"  C−B: {comparison.comparison_ba:.6f}  интервал: [{boot.lower:.6f}, {boot.upper:.6f}]")
+    return 0
+
+
 def _cmd_bootstrap(arguments: argparse.Namespace) -> int:
     """Бутстрэп-интервал разности MSE моделей B и C (парный блочный)."""
     import json
@@ -942,6 +1007,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Проверки устойчивости процедуры отбора (длина окна/блока, исключения).",
     )
     sensitivity_parser.set_defaults(handler=_cmd_sensitivity)
+
+    report_parser = subparsers.add_parser(
+        "report",
+        help="Сводный отчёт: модели A/B/C, графики и интерпретация.",
+    )
+    report_parser.set_defaults(handler=_cmd_report)
 
     return parser
 

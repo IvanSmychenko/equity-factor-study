@@ -471,3 +471,19 @@ def test_bootstrap_command_missing_selection_returns_one(panel_and_config, capsy
         "--report-dir", str(tmp_path / "empty"), "bootstrap",
     ])
     assert code == 1
+
+
+def test_report_command_writes_summary_and_plots(panel_and_config, capsys):
+    """report формирует сводный markdown-отчёт и три PNG-графика (без сети)."""
+    tmp_path, tmp_config, processed_dir = panel_and_config
+    report_dir = tmp_path / "reports"
+    code = main([
+        "--config", str(tmp_config), "--processed-dir", str(processed_dir),
+        "--report-dir", str(report_dir), "report",
+    ])
+    assert code == 0
+    assert (report_dir / "summary_report.md").exists()
+    assert (report_dir / "errors_B_C.png").exists()
+    assert (report_dir / "rebalance_history.png").exists()
+    assert (report_dir / "bootstrap_distribution.png").exists()
+    assert "Сводный отчёт" in capsys.readouterr().out
